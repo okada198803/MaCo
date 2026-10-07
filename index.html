@@ -1,0 +1,1239 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>MaCo 錬成</title>
+<style>
+  :root {
+    --bg: #0a0a0a; --panel: #14161a; --panel2: #1a1d22; --border: #262a30;
+    --text: #e8e8e8; --sub: #8a8f98; --accent: #4fd1c5;
+    --good: #4ade80; --warn: #fbbf24; --bad: #f87171;
+    --safe-b: env(safe-area-inset-bottom, 0px); --safe-t: env(safe-area-inset-top, 0px);
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, "Hiragino Sans", "Segoe UI", sans-serif; }
+  body { padding: calc(10px + var(--safe-t)) 12px calc(76px + var(--safe-b)) 12px; }
+  button { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 10px;
+    padding: 11px 14px; font-size: 14px; font-family: inherit; }
+  button:active { transform: scale(0.97); }
+  button.primary { background: var(--accent); color: #0a0a0a; border: none; font-weight: 700; }
+  button:disabled { opacity: 0.4; }
+  input, select { font-family: inherit; }
+
+  .top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+  .top-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); flex-shrink: 0; }
+  .dot.on { background: var(--good); }
+  .state-pill { font-size: 13px; font-weight: 700; padding: 5px 10px; border-radius: 999px; background: var(--panel2);
+    color: var(--sub); white-space: nowrap; }
+  .state-pill.ARMED { background: #12301f; color: var(--good); }
+  .state-pill.PENDING, .state-pill.FIRED { background: #3a2f0d; color: var(--warn); }
+  .state-pill.WAIT_SLIDE, .state-pill.SLIDE { background: #1c2733; color: #7cb7f0; }
+  .banner { font-size: 12px; color: var(--warn); background: #2a220c; border: 1px solid #4a3b12; border-radius: 8px;
+    padding: 8px 10px; margin-bottom: 10px; line-height: 1.4; }
+
+  .view { display: none; } .view.active { display: block; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+  .panel h2 { font-size: 13px; color: var(--sub); margin: 0 0 8px 0; font-weight: 600; }
+  .hint { font-size: 11px; color: var(--sub); line-height: 1.45; margin: 6px 0 0 0; }
+
+  /* 結果 */
+  .hero { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 14px; margin-bottom: 10px;
+    border-left-width: 6px; }
+  .hero.b-高 { border-left-color: var(--good); } .hero.b-中 { border-left-color: var(--warn); } .hero.b-低 { border-left-color: var(--bad); }
+  .hero-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .score { font-size: 88px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: -2px; }
+  .band { width: 76px; height: 76px; border-radius: 16px; display: flex; align-items: center; justify-content: center;
+    font-size: 44px; font-weight: 800; background: var(--panel2); color: var(--sub); flex-shrink: 0; }
+  .band.b-高 { background: #12301f; color: var(--good); } .band.b-中 { background: #3a2f0d; color: var(--warn); }
+  .band.b-低 { background: #3a1616; color: var(--bad); }
+  .hero-cause { font-size: 19px; font-weight: 700; margin-top: 10px; line-height: 1.3; }
+  .hero-meta { font-size: 12px; color: var(--sub); margin-top: 4px; }
+  .rearm { width: 100%; padding: 14px; font-size: 15px; font-weight: 700; margin-bottom: 12px; border-radius: 12px;
+    border: 2px solid #2f6f4a; color: var(--good); background: #0f1d15; }
+  .row { display: flex; gap: 8px; margin-bottom: 12px; } .row button { flex: 1; }
+
+  .traj-wrap { width: 100%; aspect-ratio: 1 / 1; max-width: 340px; margin: 0 auto; }
+  .traj-wrap svg { width: 100%; height: 100%; display: block; }
+  .traj-cap { font-size: 11px; color: var(--sub); text-align: center; margin-top: 6px; }
+
+  .strip { display: flex; align-items: flex-end; gap: 4px; height: 64px; }
+  .strip .bar { flex: 1; border-radius: 3px 3px 0 0; min-height: 3px; position: relative; }
+  .strip .bar.b-高 { background: var(--good); } .strip .bar.b-中 { background: var(--warn); } .strip .bar.b-低 { background: var(--bad); }
+  .counters { display: flex; gap: 8px; margin-top: 10px; }
+  .counter { flex: 1; background: var(--panel2); border-radius: 8px; padding: 8px; text-align: center; }
+  .counter .v { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; } .counter .l { font-size: 11px; color: var(--sub); }
+
+  /* タブ */
+  .tabs { position: fixed; left: 0; right: 0; bottom: 0; display: flex; background: #0e1013; border-top: 1px solid var(--border);
+    padding-bottom: var(--safe-b); z-index: 20; }
+  .tabs button { flex: 1; border: none; border-radius: 0; background: transparent; color: var(--sub); padding: 14px 4px; font-size: 14px; font-weight: 600; }
+  .tabs button.active { color: var(--accent); box-shadow: inset 0 3px 0 var(--accent); }
+
+  /* 振り返り */
+  select.full, input.full { width: 100%; background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px; font-size: 14px; }
+  .band-bars .bb { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 13px; }
+  .bb .lab { width: 24px; font-weight: 700; } .bb .track { flex: 1; height: 12px; background: var(--panel2); border-radius: 6px; overflow: hidden; }
+  .bb .fill { height: 100%; } .bb .n { width: 54px; text-align: right; font-variant-numeric: tabular-nums; font-size: 12px; color: var(--sub); }
+  .cause-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 12px; }
+  .cause-row .cl { width: 150px; color: var(--sub); flex-shrink: 0; } .cause-row .ct { flex: 1; height: 10px; background: var(--panel2); border-radius: 5px; overflow: hidden; }
+  .cause-row .cf { height: 100%; background: var(--accent); } .cause-row .cn { width: 24px; text-align: right; }
+  table.list { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.list th { color: var(--sub); font-weight: 500; font-size: 11px; padding: 6px 4px; text-align: left; border-bottom: 1px solid var(--border); }
+  table.list td { padding: 9px 4px; border-bottom: 1px solid var(--border); }
+  table.list tr.row-shot:active { background: var(--panel2); }
+  .chip { display: inline-block; min-width: 24px; text-align: center; border-radius: 6px; padding: 1px 6px; font-weight: 700; font-size: 12px; }
+  .chip.b-高 { background: #12301f; color: var(--good); } .chip.b-中 { background: #3a2f0d; color: var(--warn); } .chip.b-低 { background: #3a1616; color: var(--bad); }
+
+  /* 設定 */
+  .set-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--border); }
+  .set-row:last-child { border-bottom: none; }
+  .set-row .sl { font-size: 13px; line-height: 1.3; } .set-row .sl small { display: block; color: var(--sub); font-size: 11px; margin-top: 2px; }
+  .set-row input[type=number] { width: 86px; background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px; font-size: 14px; text-align: right; }
+  .set-row input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--accent); }
+
+  /* シート */
+  .sheet { position: fixed; inset: 0; background: rgba(0,0,0,0.88); z-index: 40; display: none; align-items: flex-end; justify-content: center; }
+  .sheet.open { display: flex; }
+  .sheet-body { background: var(--panel); border: 1px solid var(--border); border-radius: 16px 16px 0 0; width: 100%; max-width: 420px;
+    max-height: 94vh; overflow-y: auto; padding: 14px 14px calc(14px + var(--safe-b)) 14px; }
+  .sheet-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .sheet-head h3 { margin: 0; font-size: 15px; }
+  .chart-box { width: 100%; background: #0a0a0a; border-radius: 8px; touch-action: none; }
+  .chart-box svg { width: 100%; display: block; }
+  .zoomed { border: 1px solid var(--accent); }
+  .lbl { font-size: 11px; color: var(--sub); margin: 8px 0 3px 0; }
+  .eval-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+  .eval-row label { width: 74px; font-size: 12px; color: var(--sub); flex-shrink: 0; }
+  .sheet-btns { display: flex; gap: 8px; margin-top: 10px; } .sheet-btns button { flex: 1; }
+  .danger { color: var(--bad); border-color: #5a2a2a; }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="top-left"><span class="dot" id="connDot"></span><span class="state-pill" id="statePill">未接続</span></div>
+  <button class="primary" id="btnConnect">BLE接続</button>
+</header>
+<div class="banner" id="banner" style="display:none;"></div>
+
+<main>
+  <!-- 錬成 -->
+  <section class="view active" id="viewTrain">
+    <div class="hero" id="hero">
+      <div class="hero-row"><div class="score" id="resScore">--</div><div class="band" id="resBand">–</div></div>
+      <div class="hero-cause" id="resCause">撃発を待っています</div>
+      <div class="hero-meta" id="resMeta">接続して静止バイアスを記録すると、自動で採点します。</div>
+    </div>
+    <button class="rearm" id="btnRearm">次弾準備完了（手動）</button>
+    <div class="panel">
+      <h2 id="trajTitle">軌跡</h2>
+      <div class="traj-wrap"><svg id="trajSvg" viewBox="0 0 320 320"></svg></div>
+      <div class="traj-cap" id="trajCap">待機中：照準の動きをリアルタイム表示</div>
+    </div>
+    <div class="panel">
+      <h2>直近10発（本セッション）</h2>
+      <div class="strip" id="strip"></div>
+      <div class="counters" id="counters"></div>
+    </div>
+    <div class="row">
+      <button id="btnManualAdd">撃発を手動追加</button>
+      <button id="btnNewSession">新規セッション</button>
+    </div>
+  </section>
+
+  <!-- 振り返り -->
+  <section class="view" id="viewReview">
+    <div class="panel">
+      <h2>セッション</h2>
+      <select class="full" id="selSession"></select>
+    </div>
+    <div class="panel" id="reviewSummary"></div>
+    <div class="panel"><h2>点数の推移</h2><div class="chart-box"><svg id="trendSvg" viewBox="0 0 320 150"></svg></div>
+      <p class="hint" id="trendHint"></p></div>
+    <div class="panel"><h2>判定された低下要因（中・低のショット）</h2><div id="causeHist"></div></div>
+    <div class="panel"><h2>ショット一覧（タップで詳細・修正）</h2>
+      <table class="list"><thead><tr><th>No.</th><th>時刻</th><th>予測</th><th>帯</th><th>低下要因</th></tr></thead><tbody id="shotList"></tbody></table>
+    </div>
+    <div class="row"><button id="btnExportCsv">CSV 共有・保存</button><button id="btnExportRaw">連続生データ</button></div>
+    <p class="hint">CSVは開発用アプリ（index.html）と同じ列構成です。連続生データは「設定」で記録をオンにした場合のみ保存されます。</p>
+  </section>
+
+  <!-- 設定 -->
+  <section class="view" id="viewSettings">
+    <div class="panel">
+      <h2>静止バイアス</h2>
+      <button id="btnCalib" style="width:100%;" class="primary">静止バイアスを記録（銃に装着する前、置いた状態で押す）</button>
+      <p class="hint" id="calibStatus"></p>
+    </div>
+    <div class="panel"><h2>撃発の検知</h2><div id="setDetect"></div></div>
+    <div class="panel"><h2>スライド操作の判定・再待機</h2><div id="setSlide"></div></div>
+    <div class="panel"><h2>採点の帯・表示</h2><div id="setBand"></div></div>
+    <div class="panel"><h2>記録・通知</h2><div id="setMisc"></div></div>
+    <div class="panel"><h2>検知の診断</h2><div class="hint" id="diagText" style="font-size:12px;"></div></div>
+    <button id="btnResetSettings" style="width:100%;">設定を初期値に戻す</button>
+  </section>
+</main>
+
+<nav class="tabs">
+  <button class="active" data-view="viewTrain">錬成</button>
+  <button data-view="viewReview">振り返り</button>
+  <button data-view="viewSettings">設定</button>
+</nav>
+
+<!-- ショット詳細 -->
+<div class="sheet" id="detailSheet"><div class="sheet-body">
+  <div class="sheet-head"><h3 id="dtTitle">ショット</h3><button id="dtClose">閉じる</button></div>
+  <div class="hero" id="dtHero" style="margin-bottom:10px;">
+    <div class="hero-row"><div class="score" id="dtScore" style="font-size:64px;">--</div><div class="band" id="dtBand" style="width:60px;height:60px;font-size:34px;">–</div></div>
+    <div class="hero-cause" id="dtCause" style="font-size:16px;"></div>
+    <div class="hero-meta" id="dtMeta"></div>
+  </div>
+  <div class="traj-wrap" style="max-width:300px;"><svg id="dtTraj" viewBox="0 0 320 320"></svg></div>
+  <div class="eval-row"><label>参照スコア</label><input type="number" class="full" id="dtMantis" min="0" max="100" step="0.1" placeholder="Mantisスコア（任意）"></div>
+  <div class="eval-row"><label>低下原因</label><select class="full" id="dtCauseSel"></select></div>
+  <input type="text" class="full" id="dtCauseFree" placeholder="内容を入力" style="display:none;margin-bottom:6px;">
+  <div class="sheet-btns"><button id="dtFixT0">撃発位置を修正</button><button id="dtDelete" class="danger">削除（誤検知）</button></div>
+</div></div>
+
+<!-- 撃発位置ピッカー -->
+<div class="sheet" id="pickerSheet" style="z-index:50;"><div class="sheet-body">
+  <div class="sheet-head"><h3 id="pkTitle">撃発位置の指定</h3></div>
+  <p class="hint" style="margin:0 0 6px 0;">上段をタップして大まかな位置を、下段（拡大）をタップして正確な位置を指定します。赤点線は検知しきい値です。</p>
+  <div class="chart-box"><svg id="pkFull" viewBox="0 0 320 120"></svg></div>
+  <div class="lbl">拡大表示（選択位置の前後500ms）</div>
+  <div class="chart-box zoomed"><svg id="pkZoom" viewBox="0 0 320 120"></svg></div>
+  <div class="hint" id="pkStatus" style="text-align:center;color:var(--accent);font-size:12px;font-weight:600;"></div>
+  <div class="sheet-btns"><button id="pkM10">−10ms</button><button id="pkP10">+10ms</button></div>
+  <div class="sheet-btns"><button id="pkCancel">取消し</button><button id="pkOK" class="primary">この位置で確定</button></div>
+</div></div>
+
+<script>
+// =========================================================
+// MaCo 錬成アプリ（Marksmanship Coach — Training）
+// 開発用アプリ(index.html)で検証したアルゴリズムを、錬成時の運用向けにまとめたもの。
+//   撃発の自動検知 → 採点（時間ビンRidge＋軌跡特徴）→ 低下要因の提示（7方向判定）
+//   → 自動記録（IndexedDB）→ 振り返り。スライド操作での誤検知は、ジャイロゲート・
+//   衝撃幅条件・再待機の状態機械で防ぐ。外部ライブラリには依存しない（射場でも動作）。
+// =========================================================
+
+// ==CORE_BEGIN==
+// ---- 設定の既定値（検知パラメータは既存の328件の波形で検証した値） ----
+const DEFAULTS = {
+  thr: 0.08,        // 撃発候補：加速度差分(G/サンプル)のしきい値
+  gate: 150,        // 撃発とみなす条件：ピーク前100ms〜後50msの合成角速度最大がこの値(dps)未満
+  width: 8,         // 撃発とみなす条件：ピーク±150msで 0.3×ピーク超のサンプル数がこの値以下（衝撃が短い）
+  slideG: 100,      // スライド操作とみなす合成角速度(dps)。撃発後300〜500msの最大は27dps
+  slideD: 0.3,      // スライド操作とみなす加速度差分(G/サンプル)。撃発後300〜500msの最大は0.13
+  quietG: 30,       // 静止とみなす合成角速度(dps)
+  quietD: 0.1,      // 静止とみなす加速度差分
+  quietMs: 600,     // 静止がこの時間続いたら再待機
+  autoRearmS: 8,    // スライド操作が検出されない場合に自動で再待機するまでの秒数（0で無効）
+  bandLow: 72,      // 予測がこの点未満なら「低」
+  bandHigh: 88,     // 予測がこの点以上なら「高」
+  trajScale: 5,     // 軌跡表示の倍率（枠の半径に対応する角度[deg]）
+  liveTraj: true,   // 待機中に照準の軌跡をリアルタイム表示
+  beep: false,      // 採点結果を音で通知
+  rawRecord: false, // 連続生データを保存（検知ルールの検証用）
+};
+
+const PRE_SHOT_MS = 4000;     // 軌跡・採点に使う撃発前の範囲
+const SCORE_DELAY_MS = 250;   // 採点に必要な撃発後のデータ量（変位は+100ms、方向判定は+200msまで使用）
+const RAW_PRE_MS = 5000;      // 保存する生波形：撃発前
+const RAW_POST_MS = 1000;     // 保存する生波形：撃発後（T0修正の余白を含む）
+const EXPORT_POST_MS = 500;   // CSV出力する撃発後の範囲（開発用アプリと同じ）
+
+let gyroBias = { gx: 0, gy: 0, gz: 0 };
+
+// =========================================================
+// クォータニオンによる姿勢追跡（銃口の絶対的な向きをトレースする）
+//
+// 【背景】従来はGyroX/Yを単純に時間積分していたが、これはセンサーの
+// ローカル座標系での回転量の累積に過ぎない。銃を傾ける（ロールさせる）
+// と、その傾きの分だけX/Y成分が混ざり合ってしまい、「銃口を左右に
+// 振っていないのに傾けるだけで軌跡が左右に動く」という実機での確認結果と
+// 一致する問題があった（ジンバルロックに類似した、単純角速度積分の
+// 原理的な限界）。
+//
+// 【対応】GyroX/Y/Zの3軸角速度からクォータニオンで姿勢を逐次更新し、
+// 「銃口が今どの方向を向いているか（絶対姿勢）」を追跡する方式に変更。
+// 軌跡には、この姿勢から算出した水平方向（パン）・垂直方向（チルト）の
+// 基準姿勢からのズレのみを反映し、ロール（銃身軸まわりのひねり）成分は
+// 軌跡に混入させない。
+// =========================================================
+
+// クォータニオンの積（q1 * q2）
+function quatMultiply(q1, q2) {
+  return {
+    w: q1.w * q2.w - q1.x * q2.x - q1.y * q2.y - q1.z * q2.z,
+    x: q1.w * q2.x + q1.x * q2.w + q1.y * q2.z - q1.z * q2.y,
+    y: q1.w * q2.y - q1.x * q2.z + q1.y * q2.w + q1.z * q2.x,
+    z: q1.w * q2.z + q1.x * q2.y - q1.y * q2.x + q1.z * q2.w,
+  };
+}
+
+// クォータニオンの正規化（数値誤差の蓄積による歪みを防ぐため毎回行う）
+function quatNormalize(q) {
+  const norm = Math.sqrt(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z);
+  if (norm < 1e-9) return { w: 1, x: 0, y: 0, z: 0 };
+  return { w: q.w / norm, x: q.x / norm, y: q.y / norm, z: q.z / norm };
+}
+
+// 角速度ベクトル（deg/s）と時間刻み(秒)から、微小回転を表すクォータニオンを作る
+function quatFromAngularVelocity(gx, gy, gz, dt) {
+  // deg/s -> rad/s に変換してから積分角を求める
+  const wx = gx * Math.PI / 180, wy = gy * Math.PI / 180, wz = gz * Math.PI / 180;
+  const angle = Math.sqrt(wx * wx + wy * wy + wz * wz) * dt; // この時間刻みでの回転角(rad)
+  if (angle < 1e-9) return { w: 1, x: 0, y: 0, z: 0 };
+  const axisNorm = Math.sqrt(wx * wx + wy * wy + wz * wz);
+  const sinHalf = Math.sin(angle / 2);
+  return {
+    w: Math.cos(angle / 2),
+    x: (wx / axisNorm) * sinHalf,
+    y: (wy / axisNorm) * sinHalf,
+    z: (wz / axisNorm) * sinHalf,
+  };
+}
+
+// 姿勢クォータニオンから、基準姿勢(単位クォータニオン)に対する
+// 水平方向(パン)・垂直方向(チルト)のズレ角(deg)を取り出す。
+// センサーのローカル座標系で「前方（銃口方向）」を指す基準ベクトルを
+// 現在の姿勢で回転させ、その向きから角度を算出する。
+//
+// 【軸対応の実機確認・訂正】診断アプリ(axis_check.html)による実測の結果、
+// 従来の想定（Y軸=銃身軸/ロール、X軸=左右、Z軸=上下）は誤りで、
+// 実際は以下の対応であることが判明した：
+//   GyroX = 銃身軸まわりのロール（ひねり）
+//   GyroY = 上下（ピッチ）
+//   GyroZ = 左右（ヨー）
+// これに伴い、前方（銃口方向）の基準ベクトルはX軸方向(1,0,0)に変更した
+// （ロール軸まわりに回転させても、その軸に沿ったベクトル自体の向きは
+// 変わらないため、銃身軸=X軸を基準ベクトルの向きに取る）。
+//
+// 【符号補正】実機確認により、銃口を右に振ると軌跡が左に動く（逆）ことが
+// 判明したため、pan算出時の符号を反転している。
+function quatToPanTilt(q) {
+  // ローカル座標系での「前方向」基準ベクトル(1,0,0)。X軸=銃身軸（ロール軸）。
+  const vx = 1, vy = 0, vz = 0;
+  // q * v * q^-1 （vをクォータニオンとして扱い回転させる）
+  const qv = { w: 0, x: vx, y: vy, z: vz };
+  const qConj = { w: q.w, x: -q.x, y: -q.y, z: -q.z };
+  const rotated = quatMultiply(quatMultiply(q, qv), qConj);
+  // 回転後の前方ベクトル(rotated.x, rotated.y, rotated.z)から、
+  // 左右のズレ(pan、GyroZ由来の回転で生じるY成分)・
+  // 上下のズレ(tilt、GyroY由来の回転で生じるZ成分)を角度として算出
+  const pan = Math.atan2(rotated.y, rotated.x) * 180 / Math.PI;   // 左右のズレ（axis_check.html実機検証で符号確定：反転不要）
+  const horizDist = Math.sqrt(rotated.x * rotated.x + rotated.y * rotated.y);
+  const tilt = Math.atan2(rotated.z, horizDist) * 180 / Math.PI;  // 上下のズレ
+  return { pan, tilt };
+}
+
+// 静止バイアスを差し引く関数。GyroX/Y/Zの3軸すべてに適用する。
+//
+// 【経緯】以前はここで取り付け角度の回転補正（GyroX/Y平面の回転ズレ補正）を
+// 行っていたが、実機での軸対応確認によりGyroX=ロール軸、GyroY=上下軸という
+// 性質の異なる2軸であることが判明し、平面回転補正の設計自体が意味を成さなく
+// なったため無効化した。その後、静止状態でも軌跡が一定方向にドリフトする
+// 問題が確認され、原因はジャイロのゼロ点オフセットと判明。取り付け角度補正の
+// 代わりに、装着前の静止状態で記録したバイアス（gyroBias）を差し引く処理に
+// 置き換えた。
+function applyGyroBias(gx, gy, gz) {
+  return {
+    gx: gx - gyroBias.gx,
+    gy: gy - gyroBias.gy,
+    gz: gz - gyroBias.gz,
+  };
+}
+
+// GyroX/Y/Zからクォータニオンで姿勢を逐次追跡し、各時点の銃口方向(パン・チルト)を
+// SVG座標系にマッピングする。原点（0,0）は撃発の瞬間（T0）とする：
+// 姿勢の積算自体は時系列順（撃発4秒前始点）に行い、後からT0時点の値を
+// 全体から差し引いて原点をシフトする（Mantis DHOT表示に合わせるため）。
+function buildTrajectory(samples, t0) {
+  let orientation = { w: 1, x: 0, y: 0, z: 0 }; // 基準姿勢（撃発4秒前を仮の原点）
+  const rawPoints = [];
+  for (let i = 1; i < samples.length; i++) {
+    const dt = (samples[i].t - samples[i - 1].t) / 1000;
+    const { gx, gy, gz } = applyGyroBias(samples[i].gx, samples[i].gy, samples[i].gz);
+    const dq = quatFromAngularVelocity(gx, gy, gz, dt);
+    orientation = quatNormalize(quatMultiply(orientation, dq));
+    const { pan, tilt } = quatToPanTilt(orientation);
+    rawPoints.push({
+      t: samples[i].t - t0, // 撃発を基準(0)とした相対時刻
+      x: pan,
+      y: tilt,
+    });
+  }
+
+  // T0（相対時刻0）に最も近い点の座標を、新しい原点として全体からシフトする
+  if (rawPoints.length === 0) return rawPoints;
+  const shotPoint = rawPoints.reduce((a, b) => Math.abs(b.t) < Math.abs(a.t) ? b : a, rawPoints[0]);
+  return rawPoints.map(p => ({
+    t: p.t,
+    x: p.x - shotPoint.x,
+    y: p.y - shotPoint.y,
+  }));
+}
+
+
+// =========================================================
+// 撃発時の銃口ズレ方向による低下要因の7方向分類
+//
+// 撃発前後200ms（T0-200〜+200）の軌跡（pan=左右, tilt=上下）の始点→終点の変化ベクトル
+// から方向と大きさを算出し、該当方向の低下要因候補を返す。
+// 角度はatan2(Δtilt, Δpan)で、右(pan正方向)=0度、反時計回りに上=90度・左=180度・下=270度。
+// 方向は45度刻みの8扇形（中心 0/45/90/…/315度。学習による調整はしない事前定義）。
+//
+// 【方向と低下要因の対応】（ユーザー提示の対応関係に基づく）
+//   右      : 指掛け過剰・サミング
+//   右斜め上 : 反動予期
+//   上      : 銃口上がり
+//   左      : 指のかかりが浅い・不足
+//   左下    : トリガースラップ・握り込み過ぎ
+//   下      : 銃口下がり・突き出し
+//   右下    : 引き金を引きながら握り込み
+//   左斜め上 : 押し込み・フォロースルー不足は【判定しない】（検証データで裏付けが取れなかったため。
+//             押し込み9件の判定先は 上4・なし3・左1・左斜め上扇形1。フォロースルー不足は1件のみ）
+//
+// 【小動きの除外】変位の大きさが 0.3deg 未満なら方向は判定しない（低下要因「なし」相当）。
+// 低下原因なしのショットの大きさ中央値は0.14、握り込みすぎ・指系は約0.9〜1.1。
+//
+// 【検証】5セッション計328件（2026-10時点）。押し込み・フォロースルー不足の10件を除く318件での
+// 判定一致率は全体0.786（ラベルあり0.803、「なし」の再現率0.72）。
+//   再現率: 右0.90 / 右斜め上0.64(7/11) / 上0.76 / 左0.74 / 左下0.80 / 下0.81 / 右下0.88
+//   適合率: 右0.83 / 右斜め上0.78 / 上0.70 / 左0.85 / 左下0.85 / 下0.68 / 右下0.88
+// 窓は±100/150/200/250/300msで比較し、±200以上でほぼ頭打ち（±100は全体0.75）。閾値は0.3〜0.5で
+// 全体正答率に大差なし（0.3は「なし」の取りこぼしが多く、0.4〜0.5は動きの小さい要因を落とす）。
+// 【限界】
+//  - 左下は握り込みすぎ／トリガースラップの角度が重なり、方向のみでは区別できない。
+//  - 動きの小さい銃口上がり・突き出しは「なし」と判定されやすい（銃口上がり6/41、突き出し5/53が該当）。
+//  - 反動予期は撃発後の動きに出る（撃発後100msの窓でR=0.84）。±200ms窓では右斜め上以外にも散る。
+//  - 方向は低下要因の候補であり、スコア低下の確定要因ではない。
+//  - min>maxの区間は0度をまたぐ（右: 337.5〜22.5度）。
+// =========================================================
+const QUADRANT_WINDOW_MS = 200;      // 方向判定に使う窓（T0前後）
+const QUADRANT_MIN_MAGNITUDE = 0.3;  // これ未満の動きは方向を判定しない（deg）
+const QUADRANT_DEFS = [
+  { key: 'right',       label: '指掛け過剰・サミング',           min: 337.5, max: 22.5 },
+  { key: 'up-right',    label: '反動予期',                       min: 22.5,  max: 67.5 },
+  { key: 'up',          label: '銃口上がり',                     min: 67.5,  max: 112.5 },
+  // 112.5〜157.5度（左斜め上）は押し込み・フォロースルー不足の領域だが、検証で裏付けが取れず未定義
+  { key: 'left',        label: '指のかかりが浅い',               min: 157.5, max: 202.5 },
+  { key: 'lower-left',  label: 'トリガースラップ・握り込みすぎ', min: 202.5, max: 247.5 },
+  { key: 'down',        label: '突き出し・銃口下がり',           min: 247.5, max: 292.5 },
+  { key: 'lower-right', label: '引き金を引きながら握り込み',     min: 292.5, max: 337.5 },
+];
+
+function angleInSector(angle, q) {
+  if (q.min <= q.max) return angle >= q.min && angle < q.max;
+  return angle >= q.min || angle < q.max; // 0度をまたぐ区間
+}
+
+function checkQuadrantHint(trajectory) {
+  const windowPts = trajectory.filter(p => p.t >= -QUADRANT_WINDOW_MS && p.t <= QUADRANT_WINDOW_MS);
+  if (windowPts.length < 2) return null; // データ不足時は判定しない
+
+  const first = windowPts[0];
+  const last = windowPts[windowPts.length - 1];
+  const dPan = last.x - first.x;
+  const dTilt = last.y - first.y;
+
+  // 変化量が小さい場合は方向が不定（低下要因なし相当）なため判定しない
+  const magnitude = Math.sqrt(dPan * dPan + dTilt * dTilt);
+  if (magnitude < QUADRANT_MIN_MAGNITUDE) return { angle: null, magnitude, quadrant: null };
+
+  let angle = Math.atan2(dTilt, dPan) * 180 / Math.PI;
+  if (angle < 0) angle += 360; // 0〜360度に正規化
+
+  const matched = QUADRANT_DEFS.find(q => angleInSector(angle, q));
+
+  return {
+    angle,
+    magnitude,
+    quadrant: matched ? matched.key : null,
+    quadrantLabel: matched ? matched.label : null,
+  };
+}
+
+
+// =========================================================
+// 点数予測アルゴリズム（検証版・時間ビン Ridge 回帰＋軌跡特徴）
+//
+// 4セッション計248件（Mantisスコア入力済み）で検証した結果、以下の44特徴量にRidge回帰で
+// 重みを学習させる方式を採用した。
+//   (1) 角速度の時間ビン特徴（40）: T0を基準に -400ms〜+100ms を25ms刻み（20ビン）。
+//       各ビンで次の2値の平均（ビン順に [gx, gyz] を交互に並べる。サンプルが無いビンは0）
+//         ・GyroX(ロール)の絶対値
+//         ・GyroY・GyroZ(上下・左右)の合成角速度
+//   (2) 軌跡特徴（4）: 姿勢追跡で得た軌跡（pan/tilt）から
+//         ・撃発前後100ms(T0-100〜+100)の変位の絶対値 |dx|,|dy|
+//         ・撃発前400ms(T0-400〜0)の広がり（標準偏差）sx,sy
+//   学習: 特徴量を標準化→Ridge(alpha=31.62、内部LOOで選択)→係数を元のスケールに換算して埋め込み。
+//   重みの傾向: GyroY・Z合成の重みが撃発の約150ms前〜25ms前に集中して負（動くほど減点）。
+//               軌跡特徴はすべて負（変位・広がりが大きいほど減点）、特に撃発前の上下方向の広がり(sy)が効く。
+//
+// 【構成の選定】
+//   時間窓: 窓(-500〜-200 × 0〜+300) × ビン幅(25/50ms)の32通りをセッション別CVで比較し (-400,+100,25ms) を採用。
+//           構成選択を含めて別セッション検証すると MAE 8.55点 / R² 0.751（軌跡特徴なし）。
+//   軌跡特徴: 14通りの特徴セットを比較し、セット選択を含む別セッション検証で MAE 7.04点 / R² 0.822。
+//           4セッションすべての検証で同じ系統のセット(変位＋撃発前の広がり)が選ばれ、
+//           セッション別MAEも全セッションで0.7〜1.0点改善した。
+//   ※時間窓の選定による楽観(約0.7点)は残る。期待精度はMAE 7.5〜8点程度と見ること。
+//
+// 【精度（セッション別CV＝別日想定、248件、採用構成の見かけの値）】
+//   MAE 6.96点、R² 0.827、±10点以内 77%、±15点以内 90%、AUC(70点以上か)0.965・(90点以上か)0.929。
+//   帯別の平均誤差（実測0-30/30-50/50-70/70-90/90+）: -8/-6/-3/+2/+5
+// 【限界】
+//  - 重みは時間分解能が高く、T0が10ms動くと約1点、30msで約6点悪化する。T0確認モーダルでの確認が重要。
+//  - 低得点帯の過大予測(約-8点)・高得点帯の過小予測(約+5点)は縮んだが残っている。
+//  - 指のかかりが浅い／指のかけすぎは、撃発前の動きに出にくく過大予測になりやすい（平均-10.5/-7.0点）。
+//  - 係数44個を248件で推定している。データが増えたら再フィットすること。
+//  - gx側の重みは符号が交互に振れており、個別ビンの解釈はできない（gyz側と軌跡特徴の傾向のみ解釈可）。
+// =========================================================
+const PREDICT_BIN_START_MS = -400; // T0基準
+const PREDICT_BIN_WIDTH_MS = 25;
+const PREDICT_BIN_COUNT = 20;      // -400〜+100ms
+const PREDICT_INTERCEPT = 93.356060;
+const PREDICT_WEIGHTS = [
+   1.907892, -0.013520,  // [-400,-375)ms: gx, gyz
+   1.527153,  1.539863,  // [-375,-350)ms: gx, gyz
+  -0.387409, -0.906998,  // [-350,-325)ms: gx, gyz
+   2.525965,  1.933223,  // [-325,-300)ms: gx, gyz
+   0.366335,  0.788138,  // [-300,-275)ms: gx, gyz
+  -0.382590, -1.161198,  // [-275,-250)ms: gx, gyz
+   1.659571,  1.798679,  // [-250,-225)ms: gx, gyz
+   0.113243, -0.438257,  // [-225,-200)ms: gx, gyz
+   0.417247, -0.399349,  // [-200,-175)ms: gx, gyz
+  -0.852842,  0.218822,  // [-175,-150)ms: gx, gyz
+   1.077373, -1.047417,  // [-150,-125)ms: gx, gyz
+  -0.129713, -1.014015,  // [-125,-100)ms: gx, gyz
+  -0.406472, -1.621879,  // [-100,-75)ms: gx, gyz
+  -0.618144, -1.756984,  // [-75,-50)ms: gx, gyz
+   0.293628, -0.665980,  // [-50,-25)ms: gx, gyz
+   0.071254, -0.019592,  // [-25,+0)ms: gx, gyz
+  -0.000757, -0.191532,  // [+0,+25)ms: gx, gyz
+  -0.004594, -0.011548,  // [+25,+50)ms: gx, gyz
+   0.303522, -0.749610,  // [+50,+75)ms: gx, gyz
+  -0.291012,  0.713882,  // [+75,+100)ms: gx, gyz
+  -4.582156, -1.537446,  // 軌跡変位 |dx|, |dy|（T0-100〜+100ms）
+  -29.968051, -44.353241,  // 軌跡の広がり sx, sy（T0-400〜0ms、標準偏差）
+];
+
+function calcPredictedScore(samples, t0, trajectory) {
+  if (!trajectory) return null;
+  const endMs = PREDICT_BIN_START_MS + PREDICT_BIN_WIDTH_MS * PREDICT_BIN_COUNT;
+  const win = samples.filter(s => (s.t - t0) >= PREDICT_BIN_START_MS && (s.t - t0) < endMs);
+  if (win.length < 2) return null;
+  const sumGx = new Array(PREDICT_BIN_COUNT).fill(0);
+  const sumGyz = new Array(PREDICT_BIN_COUNT).fill(0);
+  const cnt = new Array(PREDICT_BIN_COUNT).fill(0);
+  win.forEach(s => {
+    const k = Math.floor(((s.t - t0) - PREDICT_BIN_START_MS) / PREDICT_BIN_WIDTH_MS);
+    if (k < 0 || k >= PREDICT_BIN_COUNT) return;
+    const { gx, gy, gz } = applyGyroBias(s.gx, s.gy, s.gz);
+    sumGx[k] += Math.abs(gx);
+    sumGyz[k] += Math.sqrt(gy * gy + gz * gz);
+    cnt[k] += 1;
+  });
+  // 軌跡特徴：変位(T0-100〜+100、閉区間)と広がり(T0-400〜0、閉区間・母標準偏差)
+  const around = trajectory.filter(p => p.t >= -100 && p.t <= 100);
+  const pre = trajectory.filter(p => p.t >= -400 && p.t <= 0);
+  if (around.length < 2 || pre.length < 2) return null;
+  const absDx = Math.abs(around[around.length - 1].x - around[0].x);
+  const absDy = Math.abs(around[around.length - 1].y - around[0].y);
+  const popStd = (arr) => {
+    const m = arr.reduce((a, b) => a + b, 0) / arr.length;
+    return Math.sqrt(arr.reduce((a, b) => a + (b - m) ** 2, 0) / arr.length);
+  };
+  const sx = popStd(pre.map(p => p.x));
+  const sy = popStd(pre.map(p => p.y));
+
+  let raw = PREDICT_INTERCEPT;
+  for (let k = 0; k < PREDICT_BIN_COUNT; k++) {
+    if (cnt[k] === 0) continue; // サンプルが無いビンは特徴量0（学習時と同じ扱い）
+    raw += PREDICT_WEIGHTS[2 * k] * (sumGx[k] / cnt[k]);
+    raw += PREDICT_WEIGHTS[2 * k + 1] * (sumGyz[k] / cnt[k]);
+  }
+  raw += PREDICT_WEIGHTS[40] * absDx + PREDICT_WEIGHTS[41] * absDy;
+  raw += PREDICT_WEIGHTS[42] * sx + PREDICT_WEIGHTS[43] * sy;
+  const predicted = Math.max(0, Math.min(100, raw)); // 0〜100にクリップ
+  // 履歴・CSV互換のため、直前150msのGyroY・Z合成平均も保持する（予測自体には使わない）
+  const pre150 = samples.filter(s => (s.t - t0) >= -150 && (s.t - t0) < 0);
+  let meanMag = null;
+  if (pre150.length >= 1) {
+    meanMag = pre150.reduce((acc, s) => {
+      const { gy, gz } = applyGyroBias(s.gx, s.gy, s.gz);
+      return acc + Math.sqrt(gy * gy + gz * gz);
+    }, 0) / pre150.length;
+  }
+  return { predicted, meanMag };
+}
+
+
+// ---- 帯の判定（予測点数→高/中/低） ----
+function bandOf(predicted, p) {
+  if (predicted == null) return null;
+  if (predicted >= p.bandHigh) return '高';
+  if (predicted >= p.bandLow) return '中';
+  return '低';
+}
+
+// ---- 1ショット分の解析（軌跡・予測・方向判定）。samplesは生値、biasを渡して差し引く ----
+function analyzeWindow(samples, t0, bias) {
+  gyroBias = bias || { gx: 0, gy: 0, gz: 0 };
+  const ws = samples.filter(s => s.t >= t0 - PRE_SHOT_MS && s.t <= t0 + EXPORT_POST_MS);
+  if (ws.length < 2) return null;
+  const traj = buildTrajectory(ws, t0);
+  const pred = calcPredictedScore(ws, t0, traj);
+  const quad = checkQuadrantHint(traj);
+  return { traj, predicted: pred ? pred.predicted : null, quad };
+}
+
+// ---- 撃発検知（ストリーミング）----
+// 状態: ARMED(待機) → PENDING(候補の判定中) → FIRED(撃発・採点中) → WAIT_SLIDE(スライド操作待ち)
+//       → SLIDE(スライド操作中) → 静止が続くと ARMED。手動の「次弾準備完了」でいつでも ARMED。
+class ShotDetector {
+  constructor(params, handlers) {
+    this.p = params; this.h = handlers || {};
+    this.buf = []; this.bias = { gx: 0, gy: 0, gz: 0 };
+    this.hardReset();
+  }
+  hardReset() {
+    this.buf.length = 0; this.prevMag = null; this.lastT = null;
+    this.state = 'ARMED'; this.tFirst = 0; this.cool = 0; this.fired = null;
+    this.waitStart = 0; this.slideStart = 0; this.quietSince = null;
+    this.scoreQueue = []; this.rawQueue = []; this.rejected = 0;
+    this.emit('ARMED', { reset: true });
+  }
+  emit(state, info) { this.state = state; if (this.h.onState) this.h.onState(state, info || {}); }
+  idxFrom(t) {
+    let lo = 0, hi = this.buf.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (this.buf[m].t < t) lo = m + 1; else hi = m; }
+    return lo;
+  }
+  window(a, b) { return this.buf.slice(this.idxFrom(a), this.idxFrom(b + 1e-9)); }
+  rearm() { this.cool = (this.lastT || 0) + 300; this.quietSince = null; this.emit('ARMED', { manual: true }); }
+
+  push(raw) {
+    if (this.lastT !== null && raw.t < this.lastT - 1000) this.hardReset();   // デバイス再起動等で時刻が巻き戻った
+    const mag = Math.sqrt(raw.ax * raw.ax + raw.ay * raw.ay + raw.az * raw.az);
+    const d = this.prevMag === null ? 0 : Math.abs(mag - this.prevMag); this.prevMag = mag;
+    const gx = raw.gx - this.bias.gx, gy = raw.gy - this.bias.gy, gz = raw.gz - this.bias.gz;
+    const s = { t: raw.t, gx: raw.gx, gy: raw.gy, gz: raw.gz, ax: raw.ax, ay: raw.ay, az: raw.az,
+                d, gm: Math.sqrt(gx * gx + gy * gy + gz * gz) };
+    this.buf.push(s); this.lastT = s.t;
+    if (this.buf.length > 1800) this.buf.splice(0, this.buf.length - 1400);
+    this.step(s);
+    while (this.scoreQueue.length && s.t >= this.scoreQueue[0] + SCORE_DELAY_MS) {
+      const t0 = this.scoreQueue.shift(); if (this.h.onScoreDue) this.h.onScoreDue(t0);
+    }
+    while (this.rawQueue.length && s.t >= this.rawQueue[0] + RAW_POST_MS) {
+      const t0 = this.rawQueue.shift(); if (this.h.onRawDue) this.h.onRawDue(t0);
+    }
+    return s;
+  }
+  step(s) {
+    const p = this.p;
+    switch (this.state) {
+      case 'ARMED':
+        if (s.t >= this.cool && s.d >= p.thr) { this.tFirst = s.t; this.emit('PENDING'); }
+        break;
+      case 'PENDING':
+        if (s.t - this.tFirst >= 300) this.evaluate();
+        break;
+      case 'FIRED':
+        if (s.t >= this.fired.t0 + 600) { this.waitStart = s.t; this.emit('WAIT_SLIDE'); }
+        break;
+      case 'WAIT_SLIDE':
+        if (s.gm >= p.slideG || s.d >= p.slideD) { this.slideStart = s.t; this.quietSince = null; this.emit('SLIDE'); }
+        else if (p.autoRearmS > 0 && s.t - this.waitStart >= p.autoRearmS * 1000) this.emit('ARMED', { auto: true });
+        break;
+      case 'SLIDE':
+        if (s.gm < p.quietG && s.d < p.quietD) {
+          if (this.quietSince === null) this.quietSince = s.t;
+          if (s.t - this.quietSince >= p.quietMs) this.emit('ARMED', { afterSlide: true });
+        } else this.quietSince = null;
+        if (this.state === 'SLIDE' && s.t - this.slideStart > 20000) this.emit('ARMED', { timeout: true });
+        break;
+    }
+  }
+  // 最初のしきい値超えから150ms以内の最大ピークを撃発候補とし、ジャイロゲートと衝撃幅で判定する
+  evaluate() {
+    const b = this.buf, p = this.p;
+    const i0 = this.idxFrom(this.tFirst), i1 = this.idxFrom(this.tFirst + 150 + 1e-9);
+    let k = i0; for (let i = i0; i < i1; i++) if (b[i].d > b[k].d) k = i;
+    const pk = b[k].d, tp = b[k].t;
+    let gmax = 0;
+    const g1 = this.idxFrom(tp + 50 + 1e-9);
+    for (let i = this.idxFrom(tp - 100); i < g1; i++) if (b[i].gm > gmax) gmax = b[i].gm;
+    let width = 0;
+    const w1 = this.idxFrom(tp + 150 + 1e-9);
+    for (let i = this.idxFrom(tp - 150); i < w1; i++) if (b[i].d > 0.3 * pk) width++;
+    const gateOk = gmax < p.gate, widthOk = width <= p.width;
+    if (gateOk && widthOk) {
+      this.fired = { t0: tp, peak: pk, gmax, width };
+      this.scoreQueue.push(tp); this.rawQueue.push(tp);
+      this.emit('FIRED', { t0: tp });
+      if (this.h.onShot) this.h.onShot(this.fired);
+    } else {
+      this.rejected++;
+      if (this.h.onReject) this.h.onReject({ t: tp, peak: pk, gmax, width, reason: !gateOk ? '動きが大きい（ジャイロゲート）' : '衝撃が長い（幅条件）' });
+      this.cool = this.tFirst + 150;
+      this.emit('ARMED', { rejected: true });
+    }
+  }
+}
+// ==CORE_END==
+
+const CAUSE_OPTIONS = [
+  'ガク引き',
+  '押し込み',
+  '突き上げ',
+  '指のかけすぎ（横方向）',
+  '指のかかりが浅い',
+  '呼吸のタイミング',
+  'グリップの緩み',
+  // 以下、実運用（検証データ収集）で自由入力から実績が確認できたため追加
+  '引き金を引きながら握り込み',
+  '握り込みすぎ',
+  '突き出し',
+  '反動予期',
+  'トリガースラップ',
+  '掌底の押し付けすぎ',
+  '銃口上がり',
+  'フォロースルー不足',
+  'サミング',
+  '銃口下がり',
+  'その他（自由入力）',
+];
+
+
+// =========================================================
+// ここから下はUI・保存・BLE（DOM依存）
+// =========================================================
+const $ = (id) => document.getElementById(id);
+const SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+const CHAR_UUID    = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
+const PACKET_SIZE = 28;
+
+// ---- 設定の保存（localStorage。使えない環境ではメモリのみ） ----
+let settings = Object.assign({}, DEFAULTS);
+function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* 保存できない環境では無視 */ } }
+try { const s = JSON.parse(lsGet('maco_train_settings') || '{}'); Object.keys(DEFAULTS).forEach(k => { if (k in s && typeof s[k] === typeof DEFAULTS[k]) settings[k] = s[k]; }); } catch (e) {}
+function saveSettings() { lsSet('maco_train_settings', JSON.stringify(settings)); }
+let savedBias = null;
+try { savedBias = JSON.parse(lsGet('maco_train_bias') || 'null'); } catch (e) {}
+
+// ---- IndexedDB ----
+const DB = (() => {
+  let db = null;
+  const open = () => new Promise((res) => {
+    if (!window.indexedDB) return res(false);
+    const r = indexedDB.open('maco-train', 1);
+    r.onupgradeneeded = () => {
+      const d = r.result;
+      d.createObjectStore('sessions', { keyPath: 'id' });
+      d.createObjectStore('shots', { keyPath: 'key' }).createIndex('sessionId', 'sessionId');
+      d.createObjectStore('raws', { keyPath: 'key' });
+      d.createObjectStore('chunks', { keyPath: 'key' }).createIndex('sessionId', 'sessionId');
+    };
+    r.onsuccess = () => { db = r.result; res(true); };
+    r.onerror = () => res(false);
+  });
+  const run = (store, mode, fn) => new Promise((res) => {
+    if (!db) return res(null);
+    try {
+      const t = db.transaction(store, mode); const rq = fn(t.objectStore(store));
+      t.oncomplete = () => res(rq ? rq.result : null); t.onerror = () => res(null); t.onabort = () => res(null);
+    } catch (e) { res(null); }
+  });
+  return {
+    open,
+    put: (s, o) => run(s, 'readwrite', st => st.put(o)),
+    get: (s, k) => run(s, 'readonly', st => st.get(k)),
+    getAll: (s) => run(s, 'readonly', st => st.getAll()),
+    byIndex: (s, i, v) => run(s, 'readonly', st => st.index(i).getAll(v)),
+  };
+})();
+
+// ---- 状態 ----
+let det = null;                 // ShotDetector
+let session = null;             // 現在のセッション {id,start,count,bias}
+let shots = [];                 // 現在セッションのショット（メタ情報）
+let connected = false, device = null;
+let trajFrozen = false, lastLiveDraw = 0, lastShotShown = null;
+let reviewSessionId = null;
+let rawBuf = [], rawChunkIdx = 0;        // 連続生データ記録
+let audioCtx = null, wakeLock = null;
+let lastReject = null;
+
+const STATE_LABEL = { ARMED: '待機中', PENDING: '判定中', FIRED: '撃発検知', WAIT_SLIDE: 'スライド操作待ち', SLIDE: 'スライド操作中' };
+const METHOD_LABEL = { auto: '自動検知(錬成)', manual: '手動追加(錬成)' };
+
+function newSession() {
+  session = { id: Date.now(), start: Date.now(), count: 0, bias: Object.assign({}, det ? det.bias : (savedBias ? savedBias.bias : { gx: 0, gy: 0, gz: 0 })), persisted: false };
+  shots = []; rawBuf = []; rawChunkIdx = 0; lastShotShown = null;
+}
+async function persistSession() {
+  session.persisted = true;
+  await DB.put('sessions', { id: session.id, start: session.start, count: session.count, bias: session.bias, rawChunks: rawChunkIdx });
+}
+
+// ---- 検知器の生成 ----
+function makeDetector() {
+  det = new ShotDetector(settings, {
+    onState: onDetState, onShot: onDetShot, onScoreDue: finalizeShot, onRawDue: fillRaw,
+    onReject: (r) => { lastReject = r; renderDiag(); },
+  });
+  if (savedBias) det.bias = Object.assign({}, savedBias.bias);
+}
+function onDetState(st, info) {
+  const pill = $('statePill');
+  pill.textContent = connected ? STATE_LABEL[st] : '未接続';
+  pill.className = 'state-pill' + (connected ? ' ' + st : '');
+  if (st === 'ARMED') {
+    trajFrozen = false;
+    $('trajTitle').textContent = '軌跡（照準）';
+    $('trajCap').textContent = settings.liveTraj ? '待機中：照準の動きをリアルタイム表示' : '待機中';
+    if (!settings.liveTraj) $('trajSvg').innerHTML = '';
+  }
+  $('btnRearm').disabled = !connected || st === 'ARMED';
+  renderDiag();
+}
+function onDetShot() {
+  trajFrozen = true;
+  $('resScore').textContent = '…'; $('resBand').textContent = '–'; $('resBand').className = 'band';
+  $('hero').className = 'hero'; $('resCause').textContent = '撃発を検知。採点中…'; $('resMeta').textContent = '';
+}
+
+// ---- 撃発確定 → 採点 → 記録 ----
+function finalizeShot(t0, method = 'auto') {
+  const ws = det.window(t0 - PRE_SHOT_MS, t0 + SCORE_DELAY_MS);
+  const a = analyzeWindow(ws, t0, det.bias);
+  if (!a) { $('resCause').textContent = '採点できませんでした（波形データ不足）'; return null; }
+  const band = bandOf(a.predicted, settings);
+  session.count++;
+  const shot = {
+    key: session.id + ':' + session.count, sessionId: session.id, no: session.count, wall: Date.now(), method,
+    t0Abs: t0, t0Rel: 0, predicted: a.predicted, band, quad: a.quad, mantis: null, cause: '', causeFree: '', deleted: false,
+    bias: Object.assign({}, det.bias), rawReady: false,
+  };
+  shots.push(shot);
+  lastShotShown = shot;
+  showResult(shot); drawTraj(a.traj, { live: false });
+  trajFrozen = true;
+  $('trajTitle').textContent = '軌跡 No.' + shot.no; $('trajCap').textContent = '確定した撃発の軌跡（青→黄→×→赤）。スライド操作後に照準表示へ戻ります';
+  renderStrip(); beep(band);
+  persistSession(); DB.put('shots', Object.assign({}, shot));
+  if (method === 'manual') {
+    if (det.lastT >= t0 + RAW_POST_MS) fillRaw(t0); else det.rawQueue.push(t0);
+  }
+  return shot;
+}
+// 生波形の保存（撃発前5秒〜後1秒）。振り返りでのT0修正・再解析・CSV出力に使う
+function fillRaw(t0) {
+  const target = shots.slice().reverse().find(s => !s.rawReady && Math.abs(s.t0Abs - t0) < 1);
+  if (!target) return;
+  const ws = det.window(t0 - RAW_PRE_MS, t0 + RAW_POST_MS);
+  const n = ws.length; const raw = { key: target.key, sessionId: target.sessionId, bias: target.bias,
+    rt: new Float32Array(n), gx: new Float32Array(n), gy: new Float32Array(n), gz: new Float32Array(n),
+    ax: new Float32Array(n), ay: new Float32Array(n), az: new Float32Array(n) };
+  ws.forEach((s, i) => { raw.rt[i] = s.t - t0; raw.gx[i] = s.gx; raw.gy[i] = s.gy; raw.gz[i] = s.gz; raw.ax[i] = s.ax; raw.ay[i] = s.ay; raw.az[i] = s.az; });
+  target.rawReady = true;
+  DB.put('raws', raw); DB.put('shots', Object.assign({}, target));
+}
+
+// ---- 結果表示 ----
+function causeText(shot) {
+  if (shot.band === '高') return '問題なし';
+  const q = shot.quad;
+  if (!q) return '方向を判定できません（データ不足）';
+  if (q.quadrant) return q.quadrantLabel + 'の可能性';
+  if (q.angle == null) return '動きが小さく、方向の特徴なし';
+  return '左斜め上方向（押し込み等・未検証）';
+}
+function metaText(shot) {
+  const q = shot.quad; const tm = new Date(shot.wall).toLocaleTimeString('ja-JP');
+  const mv = q ? `動き ${q.magnitude.toFixed(2)}°` + (q.angle != null ? ` ／ 方向 ${q.angle.toFixed(0)}°` : '') : '';
+  return `No.${shot.no} ／ ${tm}` + (mv ? ' ／ ' + mv : '');
+}
+function showResult(shot) {
+  $('resScore').textContent = shot.predicted == null ? '--' : Math.round(shot.predicted);
+  $('resBand').textContent = shot.band || '–'; $('resBand').className = 'band b-' + shot.band;
+  $('hero').className = 'hero b-' + shot.band;
+  $('resCause').textContent = causeText(shot); $('resMeta').textContent = metaText(shot);
+}
+function beep(band) {
+  if (!settings.beep || !audioCtx) return;
+  const seq = band === '高' ? [[880, 0.14]] : band === '中' ? [[660, 0.12], [660, 0.12]] : [[330, 0.14], [330, 0.14], [330, 0.14]];
+  let t = audioCtx.currentTime;
+  seq.forEach(([f, d]) => {
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain(); o.frequency.value = f; o.type = 'sine';
+    g.gain.setValueAtTime(0.2, t); g.gain.exponentialRampToValueAtTime(0.001, t + d); o.connect(g); g.connect(audioCtx.destination);
+    o.start(t); o.stop(t + d); t += d + 0.08;
+  });
+}
+function renderStrip() {
+  const live = shots.filter(s => !s.deleted); const last = live.slice(-10);
+  $('strip').innerHTML = last.map(s => `<div class="bar b-${s.band}" style="height:${Math.max(4, (s.predicted || 0))}%" title="No.${s.no}: ${Math.round(s.predicted)}"></div>`).join('');
+  const sm = summarize(live);
+  $('counters').innerHTML = [['発数', sm.n], ['平均', sm.n ? sm.mean.toFixed(0) : '--'], ['高', sm.hi], ['中', sm.mid], ['低', sm.lo]]
+    .map(([l, v]) => `<div class="counter"><div class="v">${v}</div><div class="l">${l}</div></div>`).join('');
+}
+function summarize(list) {
+  const sc = list.filter(s => s.predicted != null);
+  const mean = sc.length ? sc.reduce((a, s) => a + s.predicted, 0) / sc.length : 0;
+  const sd = sc.length > 1 ? Math.sqrt(sc.reduce((a, s) => a + (s.predicted - mean) ** 2, 0) / sc.length) : 0;
+  return { n: list.length, mean, sd, hi: list.filter(s => s.band === '高').length, mid: list.filter(s => s.band === '中').length, lo: list.filter(s => s.band === '低').length };
+}
+
+// ---- 軌跡の描画（開発用アプリと同じ見せ方：青→黄→×→赤） ----
+function drawTraj(points, opt, svgEl) {
+  const svg = svgEl || $('trajSvg'); const live = opt && opt.live;
+  const SIZE = 320, C = 160, R = C - 30, scale = R / settings.trajScale;
+  const clip = (px, py) => { const dx = px - C, dy = py - C, dist = Math.sqrt(dx * dx + dy * dy); if (dist <= R) return { x: px, y: py }; const r = R / dist; return { x: C + dx * r, y: C + dy * r }; };
+  let h = '';
+  for (let r = 30; r <= C - 10; r += 30) h += `<circle cx="${C}" cy="${C}" r="${r}" stroke="#3a1f22" stroke-width="1" fill="none"/>`;
+  h += `<line x1="10" y1="${C}" x2="${SIZE - 10}" y2="${C}" stroke="#444"/><line x1="${C}" y1="10" x2="${C}" y2="${SIZE - 10}" stroke="#444"/>`;
+  const col = (t) => {
+    if (!live && t >= 0) return '#f87171';
+    const ratio = Math.min(1, (Math.min(0, t) + PRE_SHOT_MS) / PRE_SHOT_MS);
+    const c1 = [0x60, 0xa5, 0xfa], c2 = [0xfb, 0xbf, 0x24]; const c = c1.map((v, i) => Math.round(v + (c2[i] - v) * ratio));
+    return `rgb(${c[0]},${c[1]},${c[2]})`;
+  };
+  for (let i = 1; i < points.length; i++) {
+    const p0 = points[i - 1], p1 = points[i];
+    const a = clip(C + p0.x * scale, C - p0.y * scale), b = clip(C + p1.x * scale, C - p1.y * scale);
+    h += `<line x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}" stroke="${col(p1.t)}" stroke-width="2.5" stroke-linecap="round"/>`;
+  }
+  if (points.length) {
+    if (!live) {
+      const sp = points.reduce((a, b) => Math.abs(b.t) < Math.abs(a.t) ? b : a, points[0]); const c = clip(C + sp.x * scale, C - sp.y * scale);
+      h += `<text x="${c.x}" y="${c.y}" font-size="16" fill="#fff" text-anchor="middle" dominant-baseline="central" font-weight="bold">×</text>`;
+    } else {
+      const last = points[points.length - 1]; const c = clip(C + last.x * scale, C - last.y * scale);
+      h += `<circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="4" fill="#fbbf24" stroke="#fff" stroke-width="1"/>`;
+    }
+  }
+  svg.innerHTML = h;
+}
+function updateLiveTraj(s) {
+  if (trajFrozen || !settings.liveTraj || !(det.state === 'ARMED' || det.state === 'PENDING')) return;
+  if (s.t - lastLiveDraw < 100) return; lastLiveDraw = s.t;
+  const ws = det.window(s.t - PRE_SHOT_MS, s.t); if (ws.length < 2) return;
+  gyroBias = det.bias; drawTraj(buildTrajectory(ws, s.t), { live: true });
+}
+
+// ---- BLE ----
+async function connectBle() {
+  try {
+    try { if (!audioCtx && window.AudioContext) audioCtx = new AudioContext(); } catch (e) {}
+    device = await navigator.bluetooth.requestDevice({ filters: [{ services: [SERVICE_UUID] }] });
+    const server = await device.gatt.connect();
+    const ch = await (await server.getPrimaryService(SERVICE_UUID)).getCharacteristic(CHAR_UUID);
+    await ch.startNotifications(); ch.addEventListener('characteristicvaluechanged', onImu);
+    device.addEventListener('gattserverdisconnected', () => setConnected(false));
+    setConnected(true);
+    try { if (navigator.wakeLock) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+  } catch (err) { console.error(err); alert('BLE接続に失敗しました: ' + err.message); }
+}
+function setConnected(c) {
+  connected = c; $('connDot').classList.toggle('on', c);
+  $('btnConnect').textContent = c ? '接続中' : 'BLE接続'; $('btnConnect').disabled = c;
+  if (c) { det.hardReset(); lastLiveDraw = 0; }
+  onDetState(det.state, {}); updateBanner();
+}
+function onImu(ev) {
+  const dv = ev.target.value; if (dv.byteLength < PACKET_SIZE) return;
+  const raw = { t: dv.getUint32(0, true), gx: dv.getFloat32(4, true), gy: dv.getFloat32(8, true), gz: dv.getFloat32(12, true),
+                ax: dv.getFloat32(16, true), ay: dv.getFloat32(20, true), az: dv.getFloat32(24, true) };
+  const s = det.push(raw);
+  updateLiveTraj(s);
+  if (settings.rawRecord) { rawBuf.push(raw); if (rawBuf.length >= 3000) flushRaw(); }
+}
+async function flushRaw() {
+  if (!rawBuf.length || !session) return;
+  const n = rawBuf.length, t = new Float64Array(n), v = new Float32Array(n * 6);
+  rawBuf.forEach((r, i) => { t[i] = r.t; v[i * 6] = r.gx; v[i * 6 + 1] = r.gy; v[i * 6 + 2] = r.gz; v[i * 6 + 3] = r.ax; v[i * 6 + 4] = r.ay; v[i * 6 + 5] = r.az; });
+  rawBuf = []; const idx = rawChunkIdx++;
+  if (!session.persisted) await persistSession();
+  await DB.put('chunks', { key: session.id + ':' + idx, sessionId: session.id, idx, t, v });
+  await DB.put('sessions', { id: session.id, start: session.start, count: session.count, bias: session.bias, rawChunks: rawChunkIdx });
+}
+
+// ---- 静止バイアス ----
+function calibrate() {
+  if (!det || det.buf.length < 100) { alert('データが不足しています。BLE接続後、少し待ってから押してください。'); return; }
+  const rc = det.buf.slice(-100); const m = rc.reduce((a, s) => { a.gx += s.gx; a.gy += s.gy; a.gz += s.gz; return a; }, { gx: 0, gy: 0, gz: 0 });
+  const bias = { gx: m.gx / 100, gy: m.gy / 100, gz: m.gz / 100 };
+  det.bias = bias; if (session) session.bias = Object.assign({}, bias);
+  savedBias = { bias, at: Date.now() }; lsSet('maco_train_bias', JSON.stringify(savedBias));
+  renderCalib(); updateBanner();
+}
+function renderCalib() {
+  const el = $('calibStatus');
+  if (!savedBias) { el.textContent = '未記録：銃に装着する前、静止した状態で押してください（ジャイロのゼロ点ズレによるドリフトと誤判定を防ぎます）。'; return; }
+  const b = savedBias.bias; el.textContent = `記録済み（${new Date(savedBias.at).toLocaleString('ja-JP')}）：GyroX=${b.gx.toFixed(2)}, GyroY=${b.gy.toFixed(2)}, GyroZ=${b.gz.toFixed(2)} dps`;
+}
+function updateBanner() {
+  const el = $('banner'); let msg = '';
+  if (!savedBias) msg = '静止バイアスが未記録です。「設定」タブで、銃に装着する前に記録してください。';
+  else if (connected && Date.now() - savedBias.at > 12 * 3600 * 1000) msg = '静止バイアスの記録から12時間以上経っています。必要なら「設定」タブで再記録してください。';
+  el.style.display = msg ? 'block' : 'none'; el.textContent = msg;
+}
+
+// ---- 手動追加（取りこぼし）----
+function manualAdd() {
+  if (!connected || det.buf.length < 300) { alert('接続してデータを受信してから押してください。'); return; }
+  const last = det.lastT; const ws = det.window(last - 6000, last);
+  const pts = ws.map(s => ({ t: s.t, d: s.d }));
+  const hi = last - SCORE_DELAY_MS; const cand = pts.filter(p => p.t <= hi);
+  const init = cand.length ? cand.reduce((a, b) => b.d > a.d ? b : a, cand[0]).t : hi;
+  openPicker({ title: '取りこぼした撃発を追加', pts, lo: pts[0].t, hi, sel: init, onOK: (t0) => {
+    finalizeShot(t0, 'manual');
+  } });
+}
+
+// ---- 撃発位置ピッカー ----
+let pk = null;
+function openPicker(o) { pk = Object.assign({}, o); $('pkTitle').textContent = o.title; $('pickerSheet').classList.add('open'); drawPicker(); }
+function closePicker() { $('pickerSheet').classList.remove('open'); pk = null; }
+function drawPicker() {
+  if (!pk) return; const W = 320, H = 120, PAD = 8, pts = pk.pts;
+  const chart = (svg, lo, hi, list, onTap) => {
+    const dmax = Math.max(0.05, settings.thr * 1.3, ...list.map(p => p.d));
+    const xOf = t => PAD + (t - lo) / (hi - lo) * (W - 2 * PAD), yOf = d => H - PAD - d / dmax * (H - 2 * PAD);
+    const path = list.map((p, i) => (i ? 'L' : 'M') + xOf(p.t).toFixed(1) + ',' + yOf(p.d).toFixed(1)).join(' ');
+    const ty = yOf(settings.thr).toFixed(1);
+    svg.innerHTML = `<line x1="0" y1="${ty}" x2="${W}" y2="${ty}" stroke="#f87171" stroke-dasharray="4,4" opacity="0.6"/>` +
+      `<path d="${path}" stroke="#4fd1c5" stroke-width="1.5" fill="none"/>` +
+      `<line x1="${xOf(pk.sel).toFixed(1)}" y1="0" x2="${xOf(pk.sel).toFixed(1)}" y2="${H}" stroke="#f87171" stroke-width="2"/>`;
+    svg.onclick = (e) => {
+      const r = svg.getBoundingClientRect(); const px = (e.clientX - r.left) / r.width * W;
+      const t = lo + Math.max(0, Math.min(1, (px - PAD) / (W - 2 * PAD))) * (hi - lo);
+      pk.sel = Math.max(pk.lo, Math.min(pk.hi, list.reduce((a, b) => Math.abs(b.t - t) < Math.abs(a.t - t) ? b : a, list[0]).t)); drawPicker();
+    };
+  };
+  chart($('pkFull'), pts[0].t, pts[pts.length - 1].t, pts);
+  const z = pts.filter(p => p.t >= pk.sel - 500 && p.t <= pk.sel + 500);
+  if (z.length > 1) chart($('pkZoom'), pk.sel - 500, pk.sel + 500, z); else $('pkZoom').innerHTML = '';
+  const rel = pk.rel != null ? pk.sel : pk.sel - pts[pts.length - 1].t;
+  $('pkStatus').textContent = pk.rel != null ? `選択中の撃発位置: ${pk.sel > 0 ? '+' : ''}${Math.round(pk.sel)}ms（元の位置を0）` : `選択中: 現在から ${Math.round(-rel)}ms 前`;
+}
+function nudge(dt) { if (!pk) return; pk.sel = Math.max(pk.lo, Math.min(pk.hi, pk.sel + dt)); drawPicker(); }
+
+// ---- 振り返り ----
+async function loadSessions() {
+  const list = (await DB.getAll('sessions')) || [];
+  if (session && !list.find(s => s.id === session.id)) list.push({ id: session.id, start: session.start, count: session.count });
+  list.sort((a, b) => b.start - a.start); return list;
+}
+async function renderReview() {
+  const sessions = await loadSessions(); const sel = $('selSession');
+  if (reviewSessionId == null && session) reviewSessionId = session.id;
+  sel.innerHTML = sessions.map(s => `<option value="${s.id}" ${s.id === reviewSessionId ? 'selected' : ''}>${new Date(s.start).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}（${s.count}発）${session && s.id === session.id ? ' ・実施中' : ''}</option>`).join('') || '<option>記録なし</option>';
+  let list = (session && reviewSessionId === session.id) ? shots : ((await DB.byIndex('shots', 'sessionId', reviewSessionId)) || []);
+  list = list.slice().sort((a, b) => a.no - b.no); const live = list.filter(s => !s.deleted);
+  const sm = summarize(live);
+  $('reviewSummary').innerHTML = sm.n ? `
+    <h2>集計</h2>
+    <div class="counters"><div class="counter"><div class="v">${sm.n}</div><div class="l">発数</div></div>
+      <div class="counter"><div class="v">${sm.mean.toFixed(0)}</div><div class="l">平均(予測)</div></div>
+      <div class="counter"><div class="v">${sm.sd.toFixed(0)}</div><div class="l">ばらつき</div></div></div>
+    <div class="band-bars" style="margin-top:10px;">${[['高', sm.hi, 'var(--good)'], ['中', sm.mid, 'var(--warn)'], ['低', sm.lo, 'var(--bad)']].map(([l, n, c]) =>
+      `<div class="bb"><div class="lab" style="color:${c}">${l}</div><div class="track"><div class="fill" style="width:${n / sm.n * 100}%;background:${c}"></div></div><div class="n">${n}発 ${Math.round(n / sm.n * 100)}%</div></div>`).join('')}</div>` :
+    '<h2>集計</h2><p class="hint">このセッションにはまだショットがありません。</p>';
+  renderTrend(live);
+  const cnt = {}; live.filter(s => s.band !== '高').forEach(s => { const t = causeText(s).replace('の可能性', ''); cnt[t] = (cnt[t] || 0) + 1; });
+  const entries = Object.entries(cnt).sort((a, b) => b[1] - a[1]); const mx = entries.length ? entries[0][1] : 1;
+  $('causeHist').innerHTML = entries.length ? entries.map(([k, n]) => `<div class="cause-row"><div class="cl">${k}</div><div class="ct"><div class="cf" style="width:${n / mx * 100}%"></div></div><div class="cn">${n}</div></div>`).join('') : '<p class="hint">中・低のショットはありません。</p>';
+  $('shotList').innerHTML = list.slice().reverse().map(s => `<tr class="row-shot" data-key="${s.key}" style="${s.deleted ? 'opacity:.35;text-decoration:line-through;' : ''}">
+    <td>${s.no}</td><td>${new Date(s.wall).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</td>
+    <td style="font-variant-numeric:tabular-nums;">${s.predicted == null ? '--' : Math.round(s.predicted)}${s.mantis != null ? `<div style="font-size:10px;color:var(--sub)">参照${s.mantis}</div>` : ''}</td>
+    <td><span class="chip b-${s.band}">${s.band || '–'}</span></td><td style="font-size:12px;">${causeText(s).replace('の可能性', '')}</td></tr>`).join('');
+  document.querySelectorAll('#shotList tr.row-shot').forEach(tr => tr.onclick = () => openDetail(list.find(s => s.key === tr.dataset.key)));
+}
+function renderTrend(live) {
+  const svg = $('trendSvg'), W = 320, H = 150, L = 24, R = 8, T = 8, B = 16; const n = live.length;
+  const xOf = i => L + (n <= 1 ? (W - L - R) / 2 : i / (n - 1) * (W - L - R)), yOf = v => T + (1 - v / 100) * (H - T - B);
+  let h = '';
+  [0, 50, 100].forEach(v => h += `<line x1="${L}" y1="${yOf(v)}" x2="${W - R}" y2="${yOf(v)}" stroke="#262a30"/><text x="2" y="${yOf(v) + 4}" font-size="9" fill="#8a8f98">${v}</text>`);
+  [[settings.bandHigh, '#4ade80'], [settings.bandLow, '#fbbf24']].forEach(([v, c]) => h += `<line x1="${L}" y1="${yOf(v)}" x2="${W - R}" y2="${yOf(v)}" stroke="${c}" stroke-dasharray="3,4" opacity="0.5"/>`);
+  if (n) {
+    h += `<path d="${live.map((s, i) => (i ? 'L' : 'M') + xOf(i).toFixed(1) + ',' + yOf(s.predicted || 0).toFixed(1)).join(' ')}" stroke="#4fd1c5" stroke-width="1.5" fill="none" opacity="0.6"/>`;
+    live.forEach((s, i) => h += `<circle cx="${xOf(i).toFixed(1)}" cy="${yOf(s.predicted || 0).toFixed(1)}" r="3.5" fill="${s.band === '高' ? '#4ade80' : s.band === '中' ? '#fbbf24' : '#f87171'}"/>`);
+  }
+  svg.innerHTML = h; $('trendHint').textContent = `点線：帯の境界（${settings.bandLow}点・${settings.bandHigh}点）。予測点数は±10点程度の幅で読んでください。`;
+}
+
+// ---- ショット詳細 ----
+let detail = null; // {shot, raw, samples}
+async function openDetail(shot) {
+  const raw = await DB.get('raws', shot.key);
+  detail = { shot, raw, samples: raw ? rawToSamples(raw) : null };
+  const sel = $('dtCauseSel'); sel.innerHTML = '<option value="">--</option>' + CAUSE_OPTIONS.map(c => `<option value="${c}">${c}</option>`).join('');
+  sel.value = shot.cause || ''; $('dtMantis').value = shot.mantis ?? ''; $('dtCauseFree').value = shot.causeFree || '';
+  $('dtCauseFree').style.display = sel.value === 'その他（自由入力）' ? 'block' : 'none';
+  $('dtFixT0').disabled = !raw; $('dtDelete').textContent = shot.deleted ? '削除を取り消す' : '削除（誤検知）';
+  paintDetail(); $('detailSheet').classList.add('open');
+}
+function rawToSamples(raw) {
+  const n = raw.rt.length, out = new Array(n);
+  for (let i = 0; i < n; i++) out[i] = { t: raw.rt[i], gx: raw.gx[i], gy: raw.gy[i], gz: raw.gz[i], ax: raw.ax[i], ay: raw.ay[i], az: raw.az[i] };
+  return out;
+}
+function paintDetail() {
+  const { shot, samples } = detail; let traj = null;
+  if (samples) { const a = analyzeWindow(samples, shot.t0Rel || 0, shot.bias); if (a) { traj = a.traj; Object.assign(shot, { predicted: a.predicted, band: bandOf(a.predicted, settings), quad: a.quad }); } }
+  $('dtTitle').textContent = `No.${shot.no}（${METHOD_LABEL[shot.method] || shot.method}${shot.t0Rel ? '・位置修正済み' : ''}）`;
+  $('dtScore').textContent = shot.predicted == null ? '--' : Math.round(shot.predicted);
+  $('dtBand').textContent = shot.band || '–'; $('dtBand').className = 'band b-' + shot.band; $('dtHero').className = 'hero b-' + shot.band;
+  $('dtCause').textContent = causeText(shot); $('dtMeta').textContent = metaText(shot);
+  if (traj) drawTraj(traj, { live: false }, $('dtTraj')); else $('dtTraj').innerHTML = '<text x="160" y="160" fill="#8a8f98" font-size="12" text-anchor="middle">生波形が保存されていません</text>';
+}
+function saveDetail() { const s = detail.shot; DB.put('shots', Object.assign({}, s)); if (session && s.sessionId === session.id) { renderStrip(); } renderReview(); }
+function fixT0() {
+  const { shot, samples } = detail; if (!samples) return;
+  const pts = samples.map((s, i) => ({ t: s.t, d: i ? Math.abs(Math.hypot(s.ax, s.ay, s.az) - Math.hypot(samples[i - 1].ax, samples[i - 1].ay, samples[i - 1].az)) : 0 }));
+  openPicker({ title: '撃発位置の修正', pts, lo: -1000, hi: 500, sel: shot.t0Rel || 0, rel: true, onOK: (t) => { shot.t0Rel = t; paintDetail(); saveDetail(); } });
+}
+
+// ---- 書き出し ----
+async function shareOrDownload(name, text, mime) {
+  try {
+    const file = new File([text], name, { type: mime });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: name }); return; }
+  } catch (e) { if (e && e.name === 'AbortError') return; }
+  const url = URL.createObjectURL(new Blob([text], { type: mime })); const a = document.createElement('a');
+  a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+async function exportCsv() {
+  const sid = reviewSessionId; if (sid == null) return;
+  const list = ((session && sid === session.id) ? shots : ((await DB.byIndex('shots', 'sessionId', sid)) || [])).filter(s => !s.deleted).sort((a, b) => a.no - b.no);
+  if (!list.length) { alert('出力できるショットがありません。'); return; }
+  const b0 = list[0].bias || { gx: 0, gy: 0, gz: 0 };
+  const header = 'No,時刻,検知方式,Mantisスコア,予測スコア,予測誤差,低下原因,最大ブレdps,ブレ量D,反動予期ヒント,フォロー減衰比,突き出しヒント,直前1秒spreadX,方向判定カテゴリ,方向判定角度deg,軌跡X,軌跡Y,軌跡t_ms,波形GyroX,波形GyroY,波形GyroZ,波形AccelX,波形AccelY,波形AccelZ,予測帯,判定低下要因\n';
+  const rows = [];
+  for (const s of list) {
+    const raw = await DB.get('raws', s.key); if (!raw) continue;
+    const t0 = s.t0Rel || 0; const samples = rawToSamples(raw).filter(x => x.t >= t0 - PRE_SHOT_MS && x.t <= t0 + EXPORT_POST_MS);
+    const a = analyzeWindow(samples, t0, s.bias); if (!a) continue;
+    const j = (arr, f, d) => arr.map(v => f(v).toFixed(d)).join(' ');
+    const cause = s.cause === 'その他（自由入力）' ? s.causeFree : s.cause;
+    const pred = a.predicted != null ? a.predicted.toFixed(1) : ''; const err = (s.mantis != null && a.predicted != null) ? (s.mantis - a.predicted).toFixed(1) : '';
+    const q = a.quad; const qc = q && q.quadrant ? q.quadrant : (q ? '判定不可(象限外)' : '判定不可(データ不足)'); const qa = q && q.angle != null ? q.angle.toFixed(1) : '';
+    rows.push([s.no, new Date(s.wall).toLocaleTimeString('ja-JP'), METHOD_LABEL[s.method] + (s.t0Rel ? '+位置修正' : ''), s.mantis ?? '', pred, err, cause || '', '', '', '', '', '', '', qc, qa,
+      `"${j(a.traj, p => p.x, 2)}"`, `"${j(a.traj, p => p.y, 2)}"`, `"${a.traj.map(p => Math.round(p.t)).join(' ')}"`,
+      `"${j(samples, p => p.gx, 2)}"`, `"${j(samples, p => p.gy, 2)}"`, `"${j(samples, p => p.gz, 2)}"`,
+      `"${j(samples, p => p.ax, 3)}"`, `"${j(samples, p => p.ay, 3)}"`, `"${j(samples, p => p.az, 3)}"`, bandOf(a.predicted, settings) || '', causeText(Object.assign({}, s, { band: bandOf(a.predicted, settings), quad: q }))].join(','));
+  }
+  const bias = `# 静止バイアス(dps): GyroX=${b0.gx.toFixed(3)}, GyroY=${b0.gy.toFixed(3)}, GyroZ=${b0.gz.toFixed(3)}\n`;
+  await shareOrDownload(`maco_train_${sid}.csv`, bias + header + rows.join('\n'), 'text/csv');
+}
+async function exportRaw() {
+  const sid = reviewSessionId; if (sid == null) return;
+  if (session && sid === session.id) await flushRaw();
+  const chunks = ((await DB.byIndex('chunks', 'sessionId', sid)) || []).sort((a, b) => a.idx - b.idx);
+  if (!chunks.length) { alert('連続生データがありません。「設定」の「連続生データを保存」をオンにして錬成すると保存されます。'); return; }
+  const parts = ['t_ms,gx,gy,gz,ax,ay,az\n'];
+  chunks.forEach(c => { let s = ''; for (let i = 0; i < c.t.length; i++) s += c.t[i] + ',' + [0, 1, 2, 3, 4, 5].map(k => c.v[i * 6 + k].toFixed(4)).join(',') + '\n'; parts.push(s); });
+  await shareOrDownload(`maco_train_raw_${sid}.csv`, parts.join(''), 'text/csv');
+}
+
+// ---- 設定画面 ----
+const SET_SPEC = {
+  setDetect: [
+    ['thr', '撃発候補のしきい値（加速度差分 G）', 'まず小さめ(0.08)で拾い、ジャイロゲート・幅条件で絞る', 0.02, 0.5, 0.01],
+    ['gate', 'ジャイロゲート（dps）', 'ピーク前後の合成角速度がこれ未満のときだけ撃発とみなす', 30, 400, 10],
+    ['width', '衝撃幅の上限（サンプル）', '撃発の衝撃は短い。スライド操作などの長い揺れを除く', 2, 31, 1],
+  ],
+  setSlide: [
+    ['slideG', 'スライド操作の角速度（dps）', '撃発後にこれ以上動いたらスライド操作とみなす', 40, 400, 10],
+    ['slideD', 'スライド操作の加速度差分（G）', '撃発後にこれ以上の衝撃でスライド操作とみなす', 0.1, 2, 0.05],
+    ['quietG', '静止とみなす角速度（dps）', 'スライド操作後、この値未満が続くと再待機', 5, 100, 5],
+    ['quietD', '静止とみなす加速度差分（G）', '', 0.02, 0.5, 0.01],
+    ['quietMs', '静止の継続時間（ms）', '', 200, 3000, 100],
+    ['autoRearmS', '自動再待機（秒、0で無効）', 'スライド操作が検出されないとき、この時間で待機に戻る', 0, 60, 1],
+  ],
+  setBand: [
+    ['bandLow', '「低」の上限（予測点）', 'これ未満を「低」。実測70点未満に対応', 50, 90, 1],
+    ['bandHigh', '「高」の下限（予測点）', 'これ以上を「高」。実測90点以上に対応', 70, 100, 1],
+    ['trajScale', '軌跡の倍率（deg）', '小さいほど拡大表示', 1, 15, 0.5],
+  ],
+  setMisc: [
+    ['liveTraj', '待機中の軌跡をリアルタイム表示', '', 'bool'],
+    ['beep', '採点結果を音で通知', '高:1回 中:2回 低:3回（接続時に音声を有効化）', 'bool'],
+    ['rawRecord', '連続生データを保存（検証用）', '検知ルールの検証・調整用。「振り返り」から書き出せます', 'bool'],
+  ],
+};
+function renderSettings() {
+  Object.entries(SET_SPEC).forEach(([box, items]) => {
+    $(box).innerHTML = items.map(([k, label, hint, a, b, c]) => {
+      const bool = items.find(x => x[0] === k).includes('bool');
+      return `<div class="set-row"><div class="sl">${label}${hint ? `<small>${hint}</small>` : ''}</div>` +
+        (bool ? `<input type="checkbox" data-k="${k}" ${settings[k] ? 'checked' : ''}>` : `<input type="number" data-k="${k}" min="${a}" max="${b}" step="${c}" value="${settings[k]}">`) + '</div>';
+    }).join('');
+  });
+  document.querySelectorAll('[data-k]').forEach(el => el.onchange = () => {
+    const k = el.dataset.k; settings[k] = el.type === 'checkbox' ? el.checked : (isNaN(parseFloat(el.value)) ? DEFAULTS[k] : parseFloat(el.value));
+    saveSettings(); if (det) det.p = settings;
+    if (k === 'beep' && settings.beep) { try { if (!audioCtx && window.AudioContext) audioCtx = new AudioContext(); if (audioCtx) audioCtx.resume(); } catch (e) {} beep('中'); }
+    if (k === 'rawRecord' && !settings.rawRecord) flushRaw();
+    if (k === 'liveTraj' && !settings.liveTraj && det.state === 'ARMED') $('trajSvg').innerHTML = '';
+  });
+  renderCalib(); renderDiag();
+}
+function renderDiag() {
+  const el = $('diagText'); if (!el || !det) return;
+  const r = lastReject;
+  el.innerHTML = `状態: ${connected ? STATE_LABEL[det.state] : '未接続'}　／　棄却した候補: ${det.rejected}件` +
+    (r ? `<br>直近の棄却: ピーク ${r.peak.toFixed(2)}G ／ 周辺の最大角速度 ${r.gmax.toFixed(0)}dps ／ 衝撃幅 ${r.width}サンプル<br>理由: ${r.reason}` : '<br>棄却された候補はまだありません。') +
+    `<br>バッファ: ${det.buf.length}サンプル${settings.rawRecord ? '　／　連続記録中' : ''}`;
+}
+
+// ---- タブ・ボタン ----
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('active', x === b));
+  document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === b.dataset.view));
+  if (b.dataset.view === 'viewReview') renderReview(); if (b.dataset.view === 'viewSettings') renderSettings();
+});
+$('btnConnect').onclick = connectBle;
+$('btnRearm').onclick = () => { if (det) det.rearm(); };
+$('btnManualAdd').onclick = manualAdd;
+$('btnNewSession').onclick = async () => {
+  if (!confirm('新しいセッションを開始します。現在のセッションは「振り返り」に残ります。')) return;
+  await flushRaw(); newSession(); reviewSessionId = session.id; showIdle(); renderStrip();
+};
+$('btnCalib').onclick = calibrate;
+$('btnResetSettings').onclick = () => { if (!confirm('設定を初期値に戻します。')) return; settings = Object.assign({}, DEFAULTS); saveSettings(); det.p = settings; renderSettings(); };
+$('selSession').onchange = (e) => { reviewSessionId = Number(e.target.value); renderReview(); };
+$('btnExportCsv').onclick = exportCsv; $('btnExportRaw').onclick = exportRaw;
+$('dtClose').onclick = () => { $('detailSheet').classList.remove('open'); detail = null; };
+$('dtMantis').onchange = () => { const v = parseFloat($('dtMantis').value); detail.shot.mantis = isNaN(v) ? null : v; saveDetail(); };
+$('dtCauseSel').onchange = () => { const v = $('dtCauseSel').value; detail.shot.cause = v; if (v !== 'その他（自由入力）') detail.shot.causeFree = ''; $('dtCauseFree').style.display = v === 'その他（自由入力）' ? 'block' : 'none'; saveDetail(); };
+$('dtCauseFree').onchange = () => { detail.shot.causeFree = $('dtCauseFree').value; saveDetail(); };
+$('dtFixT0').onclick = fixT0;
+$('dtDelete').onclick = () => { const s = detail.shot; if (!s.deleted && !confirm('このショットを削除（誤検知として除外）します。')) return; s.deleted = !s.deleted; $('dtDelete').textContent = s.deleted ? '削除を取り消す' : '削除（誤検知）'; saveDetail(); renderStrip(); };
+$('pkM10').onclick = () => nudge(-10); $('pkP10').onclick = () => nudge(10); $('pkCancel').onclick = closePicker;
+$('pkOK').onclick = () => { if (!pk) return; const cb = pk.onOK, sel = pk.sel; closePicker(); cb(sel); };
+
+function showIdle() {
+  $('resScore').textContent = '--'; $('resBand').textContent = '–'; $('resBand').className = 'band'; $('hero').className = 'hero';
+  $('resCause').textContent = '撃発を待っています'; $('resMeta').textContent = '撃発を自動で検知して採点します。'; $('trajSvg').innerHTML = '';
+}
+
+// ---- 起動 ----
+(async function init() {
+  await DB.open();
+  makeDetector(); newSession(); reviewSessionId = session.id;
+  onDetState('ARMED', {}); showIdle(); renderStrip(); renderCalib(); updateBanner(); renderSettings();
+  if (!('bluetooth' in navigator)) $('btnConnect').title = 'Web Bluetooth対応ブラウザ（Bluefy等）で開いてください';
+})();
+</script>
+</body>
+</html>
