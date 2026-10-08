@@ -29,7 +29,7 @@
   .state-pill { font-size: 13px; font-weight: 700; padding: 5px 10px; border-radius: 999px; background: var(--panel2);
     color: var(--sub); white-space: nowrap; }
   .state-pill.ARMED { background: #12301f; color: var(--good); }
-  .state-pill.PENDING, .state-pill.FIRED { background: #3a2f0d; color: var(--warn); }
+  .state-pill.PENDING, .state-pill.CONFIRM, .state-pill.FIRED { background: #3a2f0d; color: var(--warn); }
   .state-pill.WAIT_SLIDE, .state-pill.SLIDE { background: #1c2733; color: #7cb7f0; }
   .banner { font-size: 12px; color: var(--warn); background: #2a220c; border: 1px solid #4a3b12; border-radius: 8px;
     padding: 8px 10px; margin-bottom: 10px; line-height: 1.4; }
@@ -50,7 +50,11 @@
   .band.b-高 { background: #12301f; color: var(--good); } .band.b-中 { background: #3a2f0d; color: var(--warn); }
   .band.b-低 { background: #3a1616; color: var(--bad); }
   .hero-cause { font-size: 19px; font-weight: 700; margin-top: 10px; line-height: 1.3; }
-  .hero-meta { font-size: 12px; color: var(--sub); margin-top: 4px; }
+  .hero-meta { font-size: 12px; color: var(--sub); margin-top: 4px; white-space: pre-line; }
+  .hero.suspect { border-style: dashed; border-color: #6b5a1c; border-left-width: 6px; }
+  .hero.suspect .hero-meta { color: var(--warn); }
+  .strip .bar.sus { background: repeating-linear-gradient(45deg, #6b5a1c, #6b5a1c 3px, #2a220c 3px, #2a220c 6px); }
+  .tag-sus { display: inline-block; font-size: 10px; color: var(--warn); border: 1px solid #6b5a1c; border-radius: 4px; padding: 0 4px; margin-left: 4px; }
   .rearm { width: 100%; padding: 14px; font-size: 15px; font-weight: 700; margin-bottom: 12px; border-radius: 12px;
     border: 2px solid #2f6f4a; color: var(--good); background: #0f1d15; }
   .row { display: flex; gap: 8px; margin-bottom: 12px; } .row button { flex: 1; }
@@ -159,6 +163,7 @@
     <div class="panel"><h2>ショット一覧（タップで詳細・修正）</h2>
       <table class="list"><thead><tr><th>No.</th><th>時刻</th><th>予測</th><th>帯</th><th>低下要因</th></tr></thead><tbody id="shotList"></tbody></table>
     </div>
+    <div class="hint" id="storageStatus" style="margin:0 0 8px 0;"></div>
     <div class="row"><button id="btnExportCsv">CSV 共有・保存</button><button id="btnExportRaw">連続生データ</button></div>
     <p class="hint">CSVは開発用アプリ（index.html）と同じ列構成です。連続生データは「設定」で記録をオンにした場合のみ保存されます。</p>
   </section>
@@ -200,6 +205,16 @@
   <div class="sheet-btns"><button id="dtFixT0">撃発位置を修正</button><button id="dtDelete" class="danger">削除（誤検知）</button></div>
 </div></div>
 
+<!-- 書き出し -->
+<div class="sheet" id="exportSheet" style="z-index:60;"><div class="sheet-body">
+  <div class="sheet-head"><h3>書き出し</h3><button id="exClose">閉じる</button></div>
+  <div class="hero" style="margin-bottom:10px;"><div class="hero-cause" style="font-size:15px;margin:0;word-break:break-all;" id="exName"></div><div class="hero-meta" id="exNote"></div></div>
+  <div class="sheet-btns"><button id="exShare" class="primary">共有・保存</button></div>
+  <div class="sheet-btns"><button id="exCopy">コピー</button><button id="exDl">ダウンロード</button></div>
+  <p class="hint" id="exMsg" style="font-size:12px;color:var(--accent);"></p>
+  <p class="hint">「共有・保存」で「ファイルに保存」を選ぶと端末に保存できます。うまくいかない場合は「コピー」してメモ等に貼り付けてください。</p>
+</div></div>
+
 <!-- 撃発位置ピッカー -->
 <div class="sheet" id="pickerSheet" style="z-index:50;"><div class="sheet-body">
   <div class="sheet-head"><h3 id="pkTitle">撃発位置の指定</h3></div>
@@ -227,6 +242,10 @@ const DEFAULTS = {
   thr: 0.08,        // 撃発候補：加速度差分(G/サンプル)のしきい値
   gate: 150,        // 撃発とみなす条件：ピーク前100ms〜後50msの合成角速度最大がこの値(dps)未満
   width: 8,         // 撃発とみなす条件：ピーク±150msで 0.3×ピーク超のサンプル数がこの値以下（衝撃が短い）
+  rejectPre: 60,    // 静止ゲート：撃発前1秒(-1000〜-150ms)の最大角速度がこの値(dps)以上なら撃発とみなさない（既存328件の最大は50）
+  rejectPost: 60,   // 静止ゲート：撃発後(+100〜+500ms)の最大角速度がこの値以上なら撃発とみなさない（既存328件の最大は37）
+  suspectPre: 20,   // 「要確認」：撃発前の最大角速度がこの値以上（既存328件の99%点は9、超えるのは2.4%）
+  suspectPost: 20,  // 「要確認」：撃発後の最大角速度がこの値以上（既存328件の99%点は26）
   slideG: 100,      // スライド操作とみなす合成角速度(dps)。撃発後300〜500msの最大は27dps
   slideD: 0.3,      // スライド操作とみなす加速度差分(G/サンプル)。撃発後300〜500msの最大は0.13
   quietG: 30,       // 静止とみなす合成角速度(dps)
@@ -243,6 +262,7 @@ const DEFAULTS = {
 
 const PRE_SHOT_MS = 4000;     // 軌跡・採点に使う撃発前の範囲
 const SCORE_DELAY_MS = 250;   // 採点に必要な撃発後のデータ量（変位は+100ms、方向判定は+200msまで使用）
+const CONFIRM_MS = 500;       // 静止ゲートの判定に必要な撃発後のデータ量（この時点で撃発を確定する）
 const RAW_PRE_MS = 5000;      // 保存する生波形：撃発前
 const RAW_POST_MS = 1000;     // 保存する生波形：撃発後（T0修正の余白を含む）
 const EXPORT_POST_MS = 500;   // CSV出力する撃発後の範囲（開発用アプリと同じ）
@@ -594,7 +614,7 @@ function analyzeWindow(samples, t0, bias) {
 }
 
 // ---- 撃発検知（ストリーミング）----
-// 状態: ARMED(待機) → PENDING(候補の判定中) → FIRED(撃発・採点中) → WAIT_SLIDE(スライド操作待ち)
+// 状態: ARMED(待機) → PENDING(候補の判定中) → CONFIRM(前後の静止を確認中) → FIRED(撃発・採点中) → WAIT_SLIDE(スライド操作待ち)
 //       → SLIDE(スライド操作中) → 静止が続くと ARMED。手動の「次弾準備完了」でいつでも ARMED。
 class ShotDetector {
   constructor(params, handlers) {
@@ -606,7 +626,7 @@ class ShotDetector {
     this.buf.length = 0; this.prevMag = null; this.lastT = null;
     this.state = 'ARMED'; this.tFirst = 0; this.cool = 0; this.fired = null;
     this.waitStart = 0; this.slideStart = 0; this.quietSince = null;
-    this.scoreQueue = []; this.rawQueue = []; this.rejected = 0;
+    this.scoreQueue = []; this.rawQueue = []; this.rejected = 0; this.cand = null;
     this.emit('ARMED', { reset: true });
   }
   emit(state, info) { this.state = state; if (this.h.onState) this.h.onState(state, info || {}); }
@@ -628,8 +648,8 @@ class ShotDetector {
     this.buf.push(s); this.lastT = s.t;
     if (this.buf.length > 1800) this.buf.splice(0, this.buf.length - 1400);
     this.step(s);
-    while (this.scoreQueue.length && s.t >= this.scoreQueue[0] + SCORE_DELAY_MS) {
-      const t0 = this.scoreQueue.shift(); if (this.h.onScoreDue) this.h.onScoreDue(t0);
+    while (this.scoreQueue.length && s.t >= this.scoreQueue[0].t0 + SCORE_DELAY_MS) {
+      const it = this.scoreQueue.shift(); if (this.h.onScoreDue) this.h.onScoreDue(it.t0, it);
     }
     while (this.rawQueue.length && s.t >= this.rawQueue[0] + RAW_POST_MS) {
       const t0 = this.rawQueue.shift(); if (this.h.onRawDue) this.h.onRawDue(t0);
@@ -644,6 +664,9 @@ class ShotDetector {
         break;
       case 'PENDING':
         if (s.t - this.tFirst >= 300) this.evaluate();
+        break;
+      case 'CONFIRM':
+        if (s.t >= this.cand.t0 + CONFIRM_MS) this.confirm();
         break;
       case 'FIRED':
         if (s.t >= this.fired.t0 + 600) { this.waitStart = s.t; this.emit('WAIT_SLIDE'); }
@@ -675,16 +698,33 @@ class ShotDetector {
     for (let i = this.idxFrom(tp - 150); i < w1; i++) if (b[i].d > 0.3 * pk) width++;
     const gateOk = gmax < p.gate, widthOk = width <= p.width;
     if (gateOk && widthOk) {
-      this.fired = { t0: tp, peak: pk, gmax, width };
-      this.scoreQueue.push(tp); this.rawQueue.push(tp);
-      this.emit('FIRED', { t0: tp });
-      if (this.h.onShot) this.h.onShot(this.fired);
+      this.cand = { t0: tp, peak: pk, gmax, width };
+      this.emit('CONFIRM', { t0: tp });
     } else {
-      this.rejected++;
-      if (this.h.onReject) this.h.onReject({ t: tp, peak: pk, gmax, width, reason: !gateOk ? '動きが大きい（ジャイロゲート）' : '衝撃が長い（幅条件）' });
-      this.cool = this.tFirst + 150;
-      this.emit('ARMED', { rejected: true });
+      this.reject({ t: tp, peak: pk, gmax, width, reason: !gateOk ? '衝撃の瞬間に動きが大きい（ジャイロゲート）' : '衝撃が長い（幅条件）' }, this.tFirst + 150);
     }
+  }
+  // 撃発前後の静止を確認する。本物の撃発は前後ともごく静止している（既存328件：前1秒の最大50dps、後の最大37dps）。
+  // 持ち替え・スライド操作・構え直しの途中で拾った衝撃は、前後に大きな動きがあるため棄却する。
+  confirm() {
+    const c = this.cand, b = this.buf, p = this.p;
+    const maxGm = (a, z) => { let m = 0; const i1 = this.idxFrom(z + 1e-9); for (let i = this.idxFrom(a); i < i1; i++) if (b[i].gm > m) m = b[i].gm; return m; };
+    const preMax = maxGm(c.t0 - 1000, c.t0 - 150), postMax = maxGm(c.t0 + 100, c.t0 + CONFIRM_MS);
+    const info = Object.assign({}, c, { preMax, postMax });
+    if (preMax >= p.rejectPre || postMax >= p.rejectPost) {
+      info.reason = preMax >= p.rejectPre ? '撃発の前に大きな動きがある（持ち替え・スライド操作等）' : '撃発の後に大きな動きがある（スライド操作等）';
+      this.reject(info, this.lastT + 100); return;
+    }
+    info.quality = (preMax >= p.suspectPre || postMax >= p.suspectPost) ? 'suspect' : 'ok';
+    this.fired = info; this.cand = null;
+    this.scoreQueue.push({ t0: c.t0, quality: info.quality, preMax, postMax }); this.rawQueue.push(c.t0);
+    this.emit('FIRED', { t0: c.t0 });
+    if (this.h.onShot) this.h.onShot(this.fired);
+  }
+  reject(info, coolUntil) {
+    this.rejected++; this.cand = null; this.cool = coolUntil;
+    if (this.h.onReject) this.h.onReject(info);
+    this.emit('ARMED', { rejected: true });
   }
 }
 // ==CORE_END==
@@ -770,9 +810,9 @@ let trajFrozen = false, lastLiveDraw = 0, lastShotShown = null;
 let reviewSessionId = null;
 let rawBuf = [], rawChunkIdx = 0;        // 連続生データ記録
 let audioCtx = null, wakeLock = null;
-let lastReject = null;
+let lastReject = null, rejectLog = [];
 
-const STATE_LABEL = { ARMED: '待機中', PENDING: '判定中', FIRED: '撃発検知', WAIT_SLIDE: 'スライド操作待ち', SLIDE: 'スライド操作中' };
+const STATE_LABEL = { ARMED: '待機中', PENDING: '判定中', CONFIRM: '判定中', FIRED: '撃発検知', WAIT_SLIDE: 'スライド操作待ち', SLIDE: 'スライド操作中' };
 const METHOD_LABEL = { auto: '自動検知(錬成)', manual: '手動追加(錬成)' };
 
 function newSession() {
@@ -787,8 +827,8 @@ async function persistSession() {
 // ---- 検知器の生成 ----
 function makeDetector() {
   det = new ShotDetector(settings, {
-    onState: onDetState, onShot: onDetShot, onScoreDue: finalizeShot, onRawDue: fillRaw,
-    onReject: (r) => { lastReject = r; renderDiag(); },
+    onState: onDetState, onShot: onDetShot, onScoreDue: (t0, it) => finalizeShot(t0, 'auto', it), onRawDue: fillRaw,
+    onReject: (r) => { lastReject = r; rejectLog.unshift(Object.assign({ wall: Date.now() }, r)); if (rejectLog.length > 8) rejectLog.pop(); renderDiag(); },
   });
   if (savedBias) det.bias = Object.assign({}, savedBias.bias);
 }
@@ -812,7 +852,7 @@ function onDetShot() {
 }
 
 // ---- 撃発確定 → 採点 → 記録 ----
-function finalizeShot(t0, method = 'auto') {
+function finalizeShot(t0, method = 'auto', meta) {
   const ws = det.window(t0 - PRE_SHOT_MS, t0 + SCORE_DELAY_MS);
   const a = analyzeWindow(ws, t0, det.bias);
   if (!a) { $('resCause').textContent = '採点できませんでした（波形データ不足）'; return null; }
@@ -820,7 +860,8 @@ function finalizeShot(t0, method = 'auto') {
   session.count++;
   const shot = {
     key: session.id + ':' + session.count, sessionId: session.id, no: session.count, wall: Date.now(), method,
-    t0Abs: t0, t0Rel: 0, predicted: a.predicted, band, quad: a.quad, mantis: null, cause: '', causeFree: '', deleted: false,
+    t0Abs: t0, t0Rel: 0, predicted: a.predicted, band, quad: a.quad,
+    quality: (meta && meta.quality) || 'ok', preMax: meta && meta.preMax != null ? meta.preMax : null, postMax: meta && meta.postMax != null ? meta.postMax : null, mantis: null, cause: '', causeFree: '', deleted: false,
     bias: Object.assign({}, det.bias), rawReady: false,
   };
   shots.push(shot);
@@ -862,11 +903,13 @@ function metaText(shot) {
   const mv = q ? `動き ${q.magnitude.toFixed(2)}°` + (q.angle != null ? ` ／ 方向 ${q.angle.toFixed(0)}°` : '') : '';
   return `No.${shot.no} ／ ${tm}` + (mv ? ' ／ ' + mv : '');
 }
+const SUSPECT_NOTE = '⚠ 要確認：撃発前後の動きが通常より大きく、誤検知（持ち替え等）の可能性があります。';
 function showResult(shot) {
+  const sus = shot.quality === 'suspect';
   $('resScore').textContent = shot.predicted == null ? '--' : Math.round(shot.predicted);
   $('resBand').textContent = shot.band || '–'; $('resBand').className = 'band b-' + shot.band;
-  $('hero').className = 'hero b-' + shot.band;
-  $('resCause').textContent = causeText(shot); $('resMeta').textContent = metaText(shot);
+  $('hero').className = 'hero b-' + shot.band + (sus ? ' suspect' : '');
+  $('resCause').textContent = (sus ? '要確認：' : '') + causeText(shot); $('resMeta').textContent = metaText(shot) + (sus ? '\n' + SUSPECT_NOTE : '');
 }
 function beep(band) {
   if (!settings.beep || !audioCtx) return;
@@ -880,9 +923,9 @@ function beep(band) {
 }
 function renderStrip() {
   const live = shots.filter(s => !s.deleted); const last = live.slice(-10);
-  $('strip').innerHTML = last.map(s => `<div class="bar b-${s.band}" style="height:${Math.max(4, (s.predicted || 0))}%" title="No.${s.no}: ${Math.round(s.predicted)}"></div>`).join('');
-  const sm = summarize(live);
-  $('counters').innerHTML = [['発数', sm.n], ['平均', sm.n ? sm.mean.toFixed(0) : '--'], ['高', sm.hi], ['中', sm.mid], ['低', sm.lo]]
+  $('strip').innerHTML = last.map(s => `<div class="bar ${s.quality === 'suspect' ? 'sus' : 'b-' + s.band}" style="height:${Math.max(4, (s.predicted || 0))}%" title="No.${s.no}: ${Math.round(s.predicted)}${s.quality === 'suspect' ? '（要確認）' : ''}"></div>`).join('');
+  const sm = summarize(live.filter(s => s.quality !== 'suspect')); const nsus = live.filter(s => s.quality === 'suspect').length;
+  $('counters').innerHTML = [['発数', sm.n], ['平均', sm.n ? sm.mean.toFixed(0) : '--'], ['高', sm.hi], ['中', sm.mid], ['低', sm.lo], ['要確認', nsus]]
     .map(([l, v]) => `<div class="counter"><div class="v">${v}</div><div class="l">${l}</div></div>`).join('');
 }
 function summarize(list) {
@@ -1039,24 +1082,27 @@ async function renderReview() {
   sel.innerHTML = sessions.map(s => `<option value="${s.id}" ${s.id === reviewSessionId ? 'selected' : ''}>${new Date(s.start).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}（${s.count}発）${session && s.id === session.id ? ' ・実施中' : ''}</option>`).join('') || '<option>記録なし</option>';
   let list = (session && reviewSessionId === session.id) ? shots : ((await DB.byIndex('shots', 'sessionId', reviewSessionId)) || []);
   list = list.slice().sort((a, b) => a.no - b.no); const live = list.filter(s => !s.deleted);
-  const sm = summarize(live);
-  $('reviewSummary').innerHTML = sm.n ? `
+  const sm = summarize(live.filter(s => s.quality !== 'suspect')); const nsus = live.filter(s => s.quality === 'suspect').length;
+  $('reviewSummary').innerHTML = sm.n || nsus ? `
     <h2>集計</h2>
     <div class="counters"><div class="counter"><div class="v">${sm.n}</div><div class="l">発数</div></div>
       <div class="counter"><div class="v">${sm.mean.toFixed(0)}</div><div class="l">平均(予測)</div></div>
-      <div class="counter"><div class="v">${sm.sd.toFixed(0)}</div><div class="l">ばらつき</div></div></div>
+      <div class="counter"><div class="v">${sm.sd.toFixed(0)}</div><div class="l">ばらつき</div></div>
+      <div class="counter"><div class="v" style="color:var(--warn)">${nsus}</div><div class="l">要確認</div></div></div>
+    <p class="hint">集計は「要確認」を除いた${sm.n}発です。要確認は撃発前後の動きが通常より大きく、誤検知の可能性があります。</p>
     <div class="band-bars" style="margin-top:10px;">${[['高', sm.hi, 'var(--good)'], ['中', sm.mid, 'var(--warn)'], ['低', sm.lo, 'var(--bad)']].map(([l, n, c]) =>
-      `<div class="bb"><div class="lab" style="color:${c}">${l}</div><div class="track"><div class="fill" style="width:${n / sm.n * 100}%;background:${c}"></div></div><div class="n">${n}発 ${Math.round(n / sm.n * 100)}%</div></div>`).join('')}</div>` :
+      `<div class="bb"><div class="lab" style="color:${c}">${l}</div><div class="track"><div class="fill" style="width:${n / Math.max(1, sm.n) * 100}%;background:${c}"></div></div><div class="n">${n}発 ${Math.round(n / Math.max(1, sm.n) * 100)}%</div></div>`).join('')}</div>` :
     '<h2>集計</h2><p class="hint">このセッションにはまだショットがありません。</p>';
   renderTrend(live);
-  const cnt = {}; live.filter(s => s.band !== '高').forEach(s => { const t = causeText(s).replace('の可能性', ''); cnt[t] = (cnt[t] || 0) + 1; });
+  const cnt = {}; live.filter(s => s.band !== '高' && s.quality !== 'suspect').forEach(s => { const t = causeText(s).replace('の可能性', ''); cnt[t] = (cnt[t] || 0) + 1; });
   const entries = Object.entries(cnt).sort((a, b) => b[1] - a[1]); const mx = entries.length ? entries[0][1] : 1;
   $('causeHist').innerHTML = entries.length ? entries.map(([k, n]) => `<div class="cause-row"><div class="cl">${k}</div><div class="ct"><div class="cf" style="width:${n / mx * 100}%"></div></div><div class="cn">${n}</div></div>`).join('') : '<p class="hint">中・低のショットはありません。</p>';
   $('shotList').innerHTML = list.slice().reverse().map(s => `<tr class="row-shot" data-key="${s.key}" style="${s.deleted ? 'opacity:.35;text-decoration:line-through;' : ''}">
     <td>${s.no}</td><td>${new Date(s.wall).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</td>
     <td style="font-variant-numeric:tabular-nums;">${s.predicted == null ? '--' : Math.round(s.predicted)}${s.mantis != null ? `<div style="font-size:10px;color:var(--sub)">参照${s.mantis}</div>` : ''}</td>
-    <td><span class="chip b-${s.band}">${s.band || '–'}</span></td><td style="font-size:12px;">${causeText(s).replace('の可能性', '')}</td></tr>`).join('');
+    <td><span class="chip b-${s.band}">${s.band || '–'}</span>${s.quality === 'suspect' ? '<span class="tag-sus">要確認</span>' : ''}</td><td style="font-size:12px;">${causeText(s).replace('の可能性', '')}</td></tr>`).join('');
   document.querySelectorAll('#shotList tr.row-shot').forEach(tr => tr.onclick = () => openDetail(list.find(s => s.key === tr.dataset.key)));
+  renderStorageStatus(list, reviewSessionId);
 }
 function renderTrend(live) {
   const svg = $('trendSvg'), W = 320, H = 150, L = 24, R = 8, T = 8, B = 16; const n = live.length;
@@ -1066,9 +1112,11 @@ function renderTrend(live) {
   [[settings.bandHigh, '#4ade80'], [settings.bandLow, '#fbbf24']].forEach(([v, c]) => h += `<line x1="${L}" y1="${yOf(v)}" x2="${W - R}" y2="${yOf(v)}" stroke="${c}" stroke-dasharray="3,4" opacity="0.5"/>`);
   if (n) {
     h += `<path d="${live.map((s, i) => (i ? 'L' : 'M') + xOf(i).toFixed(1) + ',' + yOf(s.predicted || 0).toFixed(1)).join(' ')}" stroke="#4fd1c5" stroke-width="1.5" fill="none" opacity="0.6"/>`;
-    live.forEach((s, i) => h += `<circle cx="${xOf(i).toFixed(1)}" cy="${yOf(s.predicted || 0).toFixed(1)}" r="3.5" fill="${s.band === '高' ? '#4ade80' : s.band === '中' ? '#fbbf24' : '#f87171'}"/>`);
+    live.forEach((s, i) => { const c = s.band === '高' ? '#4ade80' : s.band === '中' ? '#fbbf24' : '#f87171';
+      h += s.quality === 'suspect' ? `<circle cx="${xOf(i).toFixed(1)}" cy="${yOf(s.predicted || 0).toFixed(1)}" r="3.5" fill="none" stroke="${c}" stroke-width="1.5"/>`
+        : `<circle cx="${xOf(i).toFixed(1)}" cy="${yOf(s.predicted || 0).toFixed(1)}" r="3.5" fill="${c}"/>`; });
   }
-  svg.innerHTML = h; $('trendHint').textContent = `点線：帯の境界（${settings.bandLow}点・${settings.bandHigh}点）。予測点数は±10点程度の幅で読んでください。`;
+  svg.innerHTML = h; $('trendHint').textContent = `点線：帯の境界（${settings.bandLow}点・${settings.bandHigh}点）。白抜きの点は「要確認」。予測点数は±10点程度の幅で読んでください。`;
 }
 
 // ---- ショット詳細 ----
@@ -1092,8 +1140,10 @@ function paintDetail() {
   if (samples) { const a = analyzeWindow(samples, shot.t0Rel || 0, shot.bias); if (a) { traj = a.traj; Object.assign(shot, { predicted: a.predicted, band: bandOf(a.predicted, settings), quad: a.quad }); } }
   $('dtTitle').textContent = `No.${shot.no}（${METHOD_LABEL[shot.method] || shot.method}${shot.t0Rel ? '・位置修正済み' : ''}）`;
   $('dtScore').textContent = shot.predicted == null ? '--' : Math.round(shot.predicted);
-  $('dtBand').textContent = shot.band || '–'; $('dtBand').className = 'band b-' + shot.band; $('dtHero').className = 'hero b-' + shot.band;
-  $('dtCause').textContent = causeText(shot); $('dtMeta').textContent = metaText(shot);
+  $('dtBand').textContent = shot.band || '–'; $('dtBand').className = 'band b-' + shot.band;
+  $('dtCause').textContent = (shot.quality === 'suspect' ? '要確認：' : '') + causeText(shot);
+  $('dtMeta').textContent = metaText(shot) + (shot.quality === 'suspect' ? '\n' + SUSPECT_NOTE : '') + (shot.preMax != null ? `\n撃発前1秒の最大 ${shot.preMax.toFixed(0)}dps ／ 撃発後の最大 ${shot.postMax.toFixed(0)}dps` : '');
+  $('dtHero').className = 'hero b-' + shot.band + (shot.quality === 'suspect' ? ' suspect' : '');
   if (traj) drawTraj(traj, { live: false }, $('dtTraj')); else $('dtTraj').innerHTML = '<text x="160" y="160" fill="#8a8f98" font-size="12" text-anchor="middle">生波形が保存されていません</text>';
 }
 function saveDetail() { const s = detail.shot; DB.put('shots', Object.assign({}, s)); if (session && s.sessionId === session.id) { renderStrip(); } renderReview(); }
@@ -1104,36 +1154,75 @@ function fixT0() {
 }
 
 // ---- 書き出し ----
-async function shareOrDownload(name, text, mime) {
+// 【経緯】実機(iPhone/Bluefy)で、ショットCSVの書き出しが保存されなかった。ショットごとのDB読み出しと解析で
+// 時間がかかり、共有(navigator.share)を呼ぶ頃にはタップ直後の「ユーザー操作」の有効期限が切れて拒否される
+// ためと考えられる。そこでCSVの作成（準備）と共有を分け、共有は専用ボタンのタップ直後に行う。
+let pendingExport = null; // {name, text, mime}
+function openExportSheet(name, text, note) {
+  pendingExport = { name, text, mime: 'text/csv' };
+  $('exName').textContent = name; $('exNote').textContent = note + `（${(text.length / 1024).toFixed(0)}KB）`; $('exMsg').textContent = '';
+  $('exportSheet').classList.add('open');
+}
+async function doShare() {
+  if (!pendingExport) return; const { name, text, mime } = pendingExport;
   try {
     const file = new File([text], name, { type: mime });
-    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: name }); return; }
-  } catch (e) { if (e && e.name === 'AbortError') return; }
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: name }); $('exMsg').textContent = '共有しました。'; return; }
+    $('exMsg').textContent = 'この環境ではファイル共有に対応していません。「コピー」または「ダウンロード」を使ってください。';
+  } catch (e) { $('exMsg').textContent = (e && e.name === 'AbortError') ? '共有を取り消しました。' : '共有に失敗しました（' + (e && e.name) + '）。「コピー」または「ダウンロード」を試してください。'; }
+}
+async function doCopy() {
+  if (!pendingExport) return;
+  try { await navigator.clipboard.writeText(pendingExport.text); $('exMsg').textContent = 'クリップボードにコピーしました。メモ等に貼り付けて保存してください。'; }
+  catch (e) { $('exMsg').textContent = 'コピーに失敗しました（' + (e && e.name) + '）。'; }
+}
+function doDownload() {
+  if (!pendingExport) return; const { name, text, mime } = pendingExport;
   const url = URL.createObjectURL(new Blob([text], { type: mime })); const a = document.createElement('a');
   a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 5000);
+  $('exMsg').textContent = 'ダウンロードを開始しました（ブラウザによっては保存されないことがあります）。';
+}
+// 生波形の取得：個別に保存した生波形があればそれを、無ければ連続生データから切り出す
+async function getRaw(shot, chunkCache) {
+  const r = await DB.get('raws', shot.key); if (r) return r;
+  if (shot.t0Abs == null) return null;
+  if (!chunkCache.list) chunkCache.list = ((await DB.byIndex('chunks', 'sessionId', shot.sessionId)) || []).sort((a, b) => a.idx - b.idx);
+  const a = shot.t0Abs - RAW_PRE_MS, b = shot.t0Abs + RAW_POST_MS; const pts = [];
+  chunkCache.list.forEach(c => { if (c.t[0] > b || c.t[c.t.length - 1] < a) return; for (let i = 0; i < c.t.length; i++) if (c.t[i] >= a && c.t[i] <= b) pts.push([c.t[i], c.v.subarray(i * 6, i * 6 + 6)]); });
+  if (pts.length < 100) return null; const n = pts.length;
+  const raw = { rt: new Float32Array(n), gx: new Float32Array(n), gy: new Float32Array(n), gz: new Float32Array(n), ax: new Float32Array(n), ay: new Float32Array(n), az: new Float32Array(n), bias: shot.bias };
+  pts.forEach(([tt, v], i) => { raw.rt[i] = tt - shot.t0Abs; raw.gx[i] = v[0]; raw.gy[i] = v[1]; raw.gz[i] = v[2]; raw.ax[i] = v[3]; raw.ay[i] = v[4]; raw.az[i] = v[5]; });
+  return raw;
 }
 async function exportCsv() {
   const sid = reviewSessionId; if (sid == null) return;
-  const list = ((session && sid === session.id) ? shots : ((await DB.byIndex('shots', 'sessionId', sid)) || [])).filter(s => !s.deleted).sort((a, b) => a.no - b.no);
-  if (!list.length) { alert('出力できるショットがありません。'); return; }
-  const b0 = list[0].bias || { gx: 0, gy: 0, gz: 0 };
-  const header = 'No,時刻,検知方式,Mantisスコア,予測スコア,予測誤差,低下原因,最大ブレdps,ブレ量D,反動予期ヒント,フォロー減衰比,突き出しヒント,直前1秒spreadX,方向判定カテゴリ,方向判定角度deg,軌跡X,軌跡Y,軌跡t_ms,波形GyroX,波形GyroY,波形GyroZ,波形AccelX,波形AccelY,波形AccelZ,予測帯,判定低下要因\n';
-  const rows = [];
-  for (const s of list) {
-    const raw = await DB.get('raws', s.key); if (!raw) continue;
-    const t0 = s.t0Rel || 0; const samples = rawToSamples(raw).filter(x => x.t >= t0 - PRE_SHOT_MS && x.t <= t0 + EXPORT_POST_MS);
-    const a = analyzeWindow(samples, t0, s.bias); if (!a) continue;
-    const j = (arr, f, d) => arr.map(v => f(v).toFixed(d)).join(' ');
-    const cause = s.cause === 'その他（自由入力）' ? s.causeFree : s.cause;
-    const pred = a.predicted != null ? a.predicted.toFixed(1) : ''; const err = (s.mantis != null && a.predicted != null) ? (s.mantis - a.predicted).toFixed(1) : '';
-    const q = a.quad; const qc = q && q.quadrant ? q.quadrant : (q ? '判定不可(象限外)' : '判定不可(データ不足)'); const qa = q && q.angle != null ? q.angle.toFixed(1) : '';
-    rows.push([s.no, new Date(s.wall).toLocaleTimeString('ja-JP'), METHOD_LABEL[s.method] + (s.t0Rel ? '+位置修正' : ''), s.mantis ?? '', pred, err, cause || '', '', '', '', '', '', '', qc, qa,
-      `"${j(a.traj, p => p.x, 2)}"`, `"${j(a.traj, p => p.y, 2)}"`, `"${a.traj.map(p => Math.round(p.t)).join(' ')}"`,
-      `"${j(samples, p => p.gx, 2)}"`, `"${j(samples, p => p.gy, 2)}"`, `"${j(samples, p => p.gz, 2)}"`,
-      `"${j(samples, p => p.ax, 3)}"`, `"${j(samples, p => p.ay, 3)}"`, `"${j(samples, p => p.az, 3)}"`, bandOf(a.predicted, settings) || '', causeText(Object.assign({}, s, { band: bandOf(a.predicted, settings), quad: q }))].join(','));
-  }
-  const bias = `# 静止バイアス(dps): GyroX=${b0.gx.toFixed(3)}, GyroY=${b0.gy.toFixed(3)}, GyroZ=${b0.gz.toFixed(3)}\n`;
-  await shareOrDownload(`maco_train_${sid}.csv`, bias + header + rows.join('\n'), 'text/csv');
+  $('exMsg') && ($('btnExportCsv').textContent = '準備中…');
+  try {
+    const all = ((session && sid === session.id) ? shots : ((await DB.byIndex('shots', 'sessionId', sid)) || [])).filter(s => !s.deleted).sort((a, b) => a.no - b.no);
+    if (!all.length) { alert('出力できるショットがありません。'); return; }
+    const b0 = all[0].bias || { gx: 0, gy: 0, gz: 0 }; const cache = {};
+    const header = 'No,時刻,検知方式,Mantisスコア,予測スコア,予測誤差,低下原因,最大ブレdps,ブレ量D,反動予期ヒント,フォロー減衰比,突き出しヒント,直前1秒spreadX,方向判定カテゴリ,方向判定角度deg,軌跡X,軌跡Y,軌跡t_ms,波形GyroX,波形GyroY,波形GyroZ,波形AccelX,波形AccelY,波形AccelZ,予測帯,判定低下要因,検知品質,撃発前最大dps,撃発後最大dps\n';
+    const rows = []; let skipped = 0;
+    for (const s of all) {
+      const raw = await getRaw(s, cache); if (!raw) { skipped++; continue; }
+      const t0 = s.t0Rel || 0; const samples = rawToSamples(raw).filter(x => x.t >= t0 - PRE_SHOT_MS && x.t <= t0 + EXPORT_POST_MS);
+      const a = analyzeWindow(samples, t0, s.bias); if (!a) { skipped++; continue; }
+      const j = (arr, f, d) => arr.map(v => f(v).toFixed(d)).join(' ');
+      const cause = s.cause === 'その他（自由入力）' ? s.causeFree : s.cause;
+      const pred = a.predicted != null ? a.predicted.toFixed(1) : ''; const err = (s.mantis != null && a.predicted != null) ? (s.mantis - a.predicted).toFixed(1) : '';
+      const q = a.quad; const qc = q && q.quadrant ? q.quadrant : (q ? '判定不可(象限外)' : '判定不可(データ不足)'); const qa = q && q.angle != null ? q.angle.toFixed(1) : '';
+      rows.push([s.no, new Date(s.wall).toLocaleTimeString('ja-JP'), METHOD_LABEL[s.method] + (s.t0Rel ? '+位置修正' : ''), s.mantis ?? '', pred, err, cause || '', '', '', '', '', '', '', qc, qa,
+        `"${j(a.traj, p => p.x, 2)}"`, `"${j(a.traj, p => p.y, 2)}"`, `"${a.traj.map(p => Math.round(p.t)).join(' ')}"`,
+        `"${j(samples, p => p.gx, 2)}"`, `"${j(samples, p => p.gy, 2)}"`, `"${j(samples, p => p.gz, 2)}"`,
+        `"${j(samples, p => p.ax, 3)}"`, `"${j(samples, p => p.ay, 3)}"`, `"${j(samples, p => p.az, 3)}"`, bandOf(a.predicted, settings) || '',
+        causeText(Object.assign({}, s, { band: bandOf(a.predicted, settings), quad: q })), s.quality === 'suspect' ? '要確認' : '通常',
+        s.preMax != null ? s.preMax.toFixed(0) : '', s.postMax != null ? s.postMax.toFixed(0) : ''].join(','));
+    }
+    if (!rows.length) { alert('生波形が見つからず、CSVを作れませんでした。\n保存状況：ショット' + all.length + '件、生波形あり0件。\n「設定」で連続生データを保存しておくと、生波形から再構築できます。'); return; }
+    const bias = `# 静止バイアス(dps): GyroX=${b0.gx.toFixed(3)}, GyroY=${b0.gy.toFixed(3)}, GyroZ=${b0.gz.toFixed(3)}\n`;
+    openExportSheet(`maco_train_${sid}.csv`, bias + header + rows.join('\n'), `${rows.length}発を出力${skipped ? '（生波形なしで' + skipped + '発を除外）' : ''}`);
+  } catch (e) { alert('CSVの作成に失敗しました: ' + (e && e.message)); }
+  finally { $('btnExportCsv').textContent = 'CSV 共有・保存'; }
 }
 async function exportRaw() {
   const sid = reviewSessionId; if (sid == null) return;
@@ -1142,7 +1231,15 @@ async function exportRaw() {
   if (!chunks.length) { alert('連続生データがありません。「設定」の「連続生データを保存」をオンにして錬成すると保存されます。'); return; }
   const parts = ['t_ms,gx,gy,gz,ax,ay,az\n'];
   chunks.forEach(c => { let s = ''; for (let i = 0; i < c.t.length; i++) s += c.t[i] + ',' + [0, 1, 2, 3, 4, 5].map(k => c.v[i * 6 + k].toFixed(4)).join(',') + '\n'; parts.push(s); });
-  await shareOrDownload(`maco_train_raw_${sid}.csv`, parts.join(''), 'text/csv');
+  const text = parts.join(''); const n = chunks.reduce((a, c) => a + c.t.length, 0);
+  openExportSheet(`maco_train_raw_${sid}.csv`, text, `連続生データ ${n}サンプル（約${Math.round(n / 100)}秒）`);
+}
+// 保存状況の確認（振り返り画面に表示）
+async function renderStorageStatus(list, sid) {
+  const raws = await Promise.all(list.map(s => DB.get('raws', s.key)));
+  const withRaw = raws.filter(Boolean).length; const chunks = ((await DB.byIndex('chunks', 'sessionId', sid)) || []);
+  const n = chunks.reduce((a, c) => a + c.t.length, 0);
+  $('storageStatus').textContent = `保存状況：ショット ${list.length}件（生波形あり ${withRaw}件）／連続生データ ${n ? Math.round(n / 100) + '秒' : 'なし'}`;
 }
 
 // ---- 設定画面 ----
@@ -1151,6 +1248,10 @@ const SET_SPEC = {
     ['thr', '撃発候補のしきい値（加速度差分 G）', 'まず小さめ(0.08)で拾い、ジャイロゲート・幅条件で絞る', 0.02, 0.5, 0.01],
     ['gate', 'ジャイロゲート（dps）', 'ピーク前後の合成角速度がこれ未満のときだけ撃発とみなす', 30, 400, 10],
     ['width', '衝撃幅の上限（サンプル）', '撃発の衝撃は短い。スライド操作などの長い揺れを除く', 2, 31, 1],
+    ['rejectPre', '棄却：撃発前の動き（dps）', '撃発前1秒の最大角速度がこれ以上なら撃発とみなさない（既存データの最大は50）', 20, 300, 5],
+    ['rejectPost', '棄却：撃発後の動き（dps）', '撃発後0.1〜0.5秒の最大角速度がこれ以上なら撃発とみなさない（既存データの最大は37）', 20, 300, 5],
+    ['suspectPre', '要確認：撃発前の動き（dps）', 'これ以上は記録するが「要確認」を付け集計から除く', 5, 100, 5],
+    ['suspectPost', '要確認：撃発後の動き（dps）', 'これ以上は記録するが「要確認」を付け集計から除く', 5, 100, 5],
   ],
   setSlide: [
     ['slideG', 'スライド操作の角速度（dps）', '撃発後にこれ以上動いたらスライド操作とみなす', 40, 400, 10],
@@ -1190,9 +1291,9 @@ function renderSettings() {
 }
 function renderDiag() {
   const el = $('diagText'); if (!el || !det) return;
-  const r = lastReject;
+  const fmt = (r) => `${new Date(r.wall).toLocaleTimeString('ja-JP')} ピーク${r.peak.toFixed(2)}G ／ 衝撃時${r.gmax.toFixed(0)}dps ／ 前${r.preMax != null ? r.preMax.toFixed(0) : '-'}dps 後${r.postMax != null ? r.postMax.toFixed(0) : '-'}dps ／ 幅${r.width}<br>　→ ${r.reason}`;
   el.innerHTML = `状態: ${connected ? STATE_LABEL[det.state] : '未接続'}　／　棄却した候補: ${det.rejected}件` +
-    (r ? `<br>直近の棄却: ピーク ${r.peak.toFixed(2)}G ／ 周辺の最大角速度 ${r.gmax.toFixed(0)}dps ／ 衝撃幅 ${r.width}サンプル<br>理由: ${r.reason}` : '<br>棄却された候補はまだありません。') +
+    (rejectLog.length ? '<br>直近の棄却（新しい順）:<br>' + rejectLog.slice(0, 5).map(fmt).join('<br>') : '<br>棄却された候補はまだありません。') +
     `<br>バッファ: ${det.buf.length}サンプル${settings.rawRecord ? '　／　連続記録中' : ''}`;
 }
 
@@ -1213,6 +1314,8 @@ $('btnCalib').onclick = calibrate;
 $('btnResetSettings').onclick = () => { if (!confirm('設定を初期値に戻します。')) return; settings = Object.assign({}, DEFAULTS); saveSettings(); det.p = settings; renderSettings(); };
 $('selSession').onchange = (e) => { reviewSessionId = Number(e.target.value); renderReview(); };
 $('btnExportCsv').onclick = exportCsv; $('btnExportRaw').onclick = exportRaw;
+$('exShare').onclick = doShare; $('exCopy').onclick = doCopy; $('exDl').onclick = doDownload;
+$('exClose').onclick = () => { $('exportSheet').classList.remove('open'); pendingExport = null; };
 $('dtClose').onclick = () => { $('detailSheet').classList.remove('open'); detail = null; };
 $('dtMantis').onchange = () => { const v = parseFloat($('dtMantis').value); detail.shot.mantis = isNaN(v) ? null : v; saveDetail(); };
 $('dtCauseSel').onchange = () => { const v = $('dtCauseSel').value; detail.shot.cause = v; if (v !== 'その他（自由入力）') detail.shot.causeFree = ''; $('dtCauseFree').style.display = v === 'その他（自由入力）' ? 'block' : 'none'; saveDetail(); };
