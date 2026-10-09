@@ -114,6 +114,9 @@
   .set-row .sl { font-size: 13px; line-height: 1.3; } .set-row .sl small { display: block; color: var(--sub); font-size: 11px; margin-top: 2px; }
   .set-row input[type=number] { width: 86px; background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 8px;
     padding: 8px; font-size: 14px; text-align: right; }
+  .set-row select.set-sel { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px; font-size: 14px; max-width: 170px; }
+  .gun-tag { font-size: 12px; font-weight: 600; color: var(--sub); border: 1px solid var(--border); border-radius: 999px; padding: 4px 9px; white-space: nowrap; }
+  .gun-tag.prov { color: var(--warn); border-color: #4a3b12; }
   .set-row input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--accent); }
 
   /* シート */
@@ -136,7 +139,7 @@
 <body>
 
 <header class="top">
-  <div class="top-left"><span class="dot" id="connDot"></span><span class="state-pill" id="statePill">未接続</span></div>
+  <div class="top-left"><span class="dot" id="connDot"></span><span class="state-pill" id="statePill">未接続</span><span class="gun-tag" id="gunTag">VP9</span></div>
   <button class="primary" id="btnConnect">BLE接続</button>
 </header>
 <div class="banner" id="banner" style="display:none;"></div>
@@ -274,6 +277,7 @@ const DEFAULTS = {
   autoRearmS: 8,    // スライド操作が検出されない場合に自動で再待機するまでの秒数（0で無効）
   bandLow: 72,      // 予測がこの点未満なら「低」
   bandHigh: 88,     // 予測がこの点以上なら「高」
+  gun: 'vp9',       // 銃種（採点モデル・程度の区分を切り替える）
   trajScale: 5,     // 軌跡表示の倍率（枠の半径に対応する角度[deg]）
   liveTraj: true,   // 待機中に照準の軌跡をリアルタイム表示
   beep: false,      // 採点結果を音で通知
@@ -470,9 +474,10 @@ const QUADRANT_SEVERITY = [         // 程度の区分（変位の大きさ、de
   { max: Infinity, label: '重度' },
 ];
 
-function severityOf(magnitude) {
+// scale: 銃種による動きの大きさの違いを補正する倍率（区分の境界に掛ける。VP9=1）
+function severityOf(magnitude, scale = 1) {
   if (magnitude == null || magnitude < QUADRANT_MIN_MAGNITUDE) return null;
-  return QUADRANT_SEVERITY.find(s => magnitude < s.max).label;
+  return QUADRANT_SEVERITY.find(s => magnitude < s.max * scale).label;
 }
 const QUADRANT_DEFS = [
   { key: 'right',       label: '指掛け過剰・サミング',           min: 337.5, max: 22.5 },
@@ -581,7 +586,11 @@ const PREDICT_WEIGHTS = [
     0.196704,              // 撃発瞬間のGyroY・Z合成角速度の最大値（T0-150〜+50ms、上限60dps）
 ];
 
+// 使用中のモデル（錬成アプリでは銃種の設定で切り替える。開発用アプリは常にこの既定値）
+let predictModel = { intercept: PREDICT_INTERCEPT, weights: PREDICT_WEIGHTS };
+
 function calcPredictedScore(samples, t0, trajectory) {
+  const PREDICT_INTERCEPT = predictModel.intercept, PREDICT_WEIGHTS = predictModel.weights;
   if (!trajectory) return null;
   const endMs = PREDICT_BIN_START_MS + PREDICT_BIN_WIDTH_MS * PREDICT_BIN_COUNT;
   const win = samples.filter(s => (s.t - t0) >= PREDICT_BIN_START_MS && (s.t - t0) < endMs);
@@ -636,6 +645,49 @@ function calcPredictedScore(samples, t0, trajectory) {
   return { predicted, meanMag };
 }
 
+// =========================================================
+// 銃種プロファイル（2026-10-09 暫定）
+// VP9: 6セッション407発で学習した既定モデル（上のPREDICT_WEIGHTS）。
+// Glock17: VP9とGlock(1セッション80発)を合わせ、銃種を特徴量に加えて学習したモデルのGlock側の重み。
+//   同じMantisスコアでもGlockは銃口の動きが大きく（撃発後100msの変位が50〜90点帯で2〜3倍、撃発前100msも約1.5倍）、
+//   VP9モデルのままでは平均6.5点低く出る（MAE 8.70、±10点以内70%）。
+//   このモデルではGlockのCV(5分割)で MAE 7.15、±10点以内77%。
+//   程度の区分も、方向が出たショットの動き量がGlockで約1.7倍（Mantis 0〜90点帯）のため、境界を1.7倍にする。
+//   Glockは1セッションのみで、銃の違いと日の違いを分離できていない。2セッション目で再確認すること。
+// =========================================================
+const GUN_PROFILES = {
+  vp9: { label: 'VP9', intercept: PREDICT_INTERCEPT, weights: PREDICT_WEIGHTS, sevScale: 1 },
+  glock17: { label: 'Glock17（暫定補正）', sevScale: 1.7,
+  intercept: 99.448774,
+  weights: [
+      0.517488,  -0.305000,  // [-400,-375)ms
+      0.282454,   0.923224,  // [-375,-350)ms
+     -0.109046,  -0.302361,  // [-350,-325)ms
+      1.553040,   0.990422,  // [-325,-300)ms
+      0.537741,   0.391629,  // [-300,-275)ms
+      0.581686,  -0.455613,  // [-275,-250)ms
+      1.163561,   1.115371,  // [-250,-225)ms
+      0.200023,   0.120277,  // [-225,-200)ms
+      0.276271,  -0.455737,  // [-200,-175)ms
+      0.232499,  -0.250196,  // [-175,-150)ms
+      0.603345,  -1.057273,  // [-150,-125)ms
+      0.036579,  -1.425011,  // [-125,-100)ms
+      0.184409,  -1.580970,  // [-100,-75)ms
+     -0.238323,  -1.565738,  // [-75,-50)ms
+      0.234826,  -1.029107,  // [-50,-25)ms
+      0.058858,  -0.105368,  // [-25,+0)ms
+     -0.050147,  -0.229074,  // [+0,+25)ms
+      0.126889,   0.008915,  // [+25,+50)ms
+      0.100050,  -0.465925,  // [+50,+75)ms
+     -0.075803,   0.101299,  // [+75,+100)ms
+     -4.306936,  -0.844102,  // |dx|, |dy|
+    -44.286535, -41.935797,  // sx, sy
+      0.182250,              // 撃発瞬間の最大角速度
+  ],
+  },
+};
+function gunProfile(gun) { return GUN_PROFILES[gun] || GUN_PROFILES.vp9; }
+
 
 // ---- 帯の判定（予測点数→高/中/低） ----
 function bandOf(predicted, p) {
@@ -646,8 +698,9 @@ function bandOf(predicted, p) {
 }
 
 // ---- 1ショット分の解析（軌跡・予測・方向判定）。samplesは生値、biasを渡して差し引く ----
-function analyzeWindow(samples, t0, bias) {
+function analyzeWindow(samples, t0, bias, gun) {
   gyroBias = bias || { gx: 0, gy: 0, gz: 0 };
+  const gp = gunProfile(gun); predictModel = { intercept: gp.intercept, weights: gp.weights };
   const ws = samples.filter(s => s.t >= t0 - PRE_SHOT_MS && s.t <= t0 + EXPORT_POST_MS);
   if (ws.length < 2) return null;
   const traj = buildTrajectory(ws, t0);
@@ -967,12 +1020,12 @@ const STATE_LABEL = { ARMED: '待機中', PENDING: '判定中', CONFIRM: '判定
 const METHOD_LABEL = { auto: '自動検知(錬成)', manual: '手動追加(錬成)' };
 
 function newSession() {
-  session = { id: Date.now(), start: Date.now(), count: 0, bias: Object.assign({}, det ? det.bias : (savedBias ? savedBias.bias : { gx: 0, gy: 0, gz: 0 })), persisted: false };
+  session = { id: Date.now(), start: Date.now(), count: 0, gun: settings.gun, bias: Object.assign({}, det ? det.bias : (savedBias ? savedBias.bias : { gx: 0, gy: 0, gz: 0 })), persisted: false };
   shots = []; rawBuf = []; rawChunkIdx = 0; lastShotShown = null;
 }
 async function persistSession() {
   session.persisted = true;
-  await DB.put('sessions', { id: session.id, start: session.start, count: session.count, bias: session.bias, rawChunks: rawChunkIdx });
+  await DB.put('sessions', { id: session.id, start: session.start, count: session.count, gun: session.gun, bias: session.bias, rawChunks: rawChunkIdx });
 }
 
 // ---- 検知器の生成 ----
@@ -1005,7 +1058,7 @@ function onDetShot() {
 // ---- 撃発確定 → 採点 → 記録 ----
 function finalizeShot(t0, method = 'auto', meta) {
   const ws = det.window(t0 - PRE_SHOT_MS, t0 + SCORE_DELAY_MS);
-  const a = analyzeWindow(ws, t0, det.bias);
+  const a = analyzeWindow(ws, t0, det.bias, settings.gun);
   if (!a) { $('resCause').textContent = '採点できませんでした（波形データ不足）'; return null; }
   const band = bandOf(a.predicted, settings);
   session.count++;
@@ -1013,7 +1066,7 @@ function finalizeShot(t0, method = 'auto', meta) {
     key: session.id + ':' + session.count, sessionId: session.id, no: session.count, wall: Date.now(), method,
     t0Abs: t0, t0Rel: 0, predicted: a.predicted, band, quad: a.quad,
     quality: (meta && meta.quality) || 'ok', preMax: meta && meta.preMax != null ? meta.preMax : null, postMax: meta && meta.postMax != null ? meta.postMax : null, mantis: null, cause: '', causeFree: '', deleted: false,
-    bias: Object.assign({}, det.bias), rawReady: false,
+    bias: Object.assign({}, det.bias), rawReady: false, gun: settings.gun,
   };
   shots.push(shot);
   lastShotShown = shot;
@@ -1050,14 +1103,14 @@ function causeKey(shot) {
   return '左斜め上方向（押し込み等・未検証）';
 }
 // 程度の表示（例: 軽度（0.42°））。「高」帯でも方向が出れば表示し、帯ごとの違いは程度で読む
-function severityText(q) {
+function severityText(q, gun) {
   if (!q || q.angle == null) return '';
-  return `${severityOf(q.magnitude)}（${q.magnitude.toFixed(2)}°）`;
+  return `${severityOf(q.magnitude, gunProfile(gun).sevScale)}（${q.magnitude.toFixed(2)}°）`;
 }
 function causeText(shot) {
   const q = shot.quad; const key = causeKey(shot);
   if (!q || q.angle == null) return key;
-  return (q.quadrant ? key + 'の可能性' : key) + '｜' + severityText(q);
+  return (q.quadrant ? key + 'の可能性' : key) + '｜' + severityText(q, shot.gun);
 }
 function metaText(shot) {
   const q = shot.quad; const tm = new Date(shot.wall).toLocaleTimeString('ja-JP');
@@ -1169,7 +1222,7 @@ async function flushRaw() {
   rawBuf = []; const idx = rawChunkIdx++;
   if (!session.persisted) await persistSession();
   await DB.put('chunks', { key: session.id + ':' + idx, sessionId: session.id, idx, t, v });
-  await DB.put('sessions', { id: session.id, start: session.start, count: session.count, bias: session.bias, rawChunks: rawChunkIdx });
+  await DB.put('sessions', { id: session.id, start: session.start, count: session.count, gun: session.gun, bias: session.bias, rawChunks: rawChunkIdx });
 }
 
 // ---- 静止バイアス ----
@@ -1236,13 +1289,13 @@ function nudge(dt) { if (!pk) return; pk.sel = Math.max(pk.lo, Math.min(pk.hi, p
 // ---- 振り返り ----
 async function loadSessions() {
   const list = (await DB.getAll('sessions')) || [];
-  if (session && !list.find(s => s.id === session.id)) list.push({ id: session.id, start: session.start, count: session.count });
+  if (session && !list.find(s => s.id === session.id)) list.push({ id: session.id, start: session.start, count: session.count, gun: session.gun });
   list.sort((a, b) => b.start - a.start); return list;
 }
 async function renderReview() {
   const sessions = await loadSessions(); const sel = $('selSession');
   if (reviewSessionId == null && session) reviewSessionId = session.id;
-  sel.innerHTML = sessions.map(s => `<option value="${s.id}" ${s.id === reviewSessionId ? 'selected' : ''}>${new Date(s.start).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}（${s.count}発）${session && s.id === session.id ? ' ・実施中' : ''}</option>`).join('') || '<option>記録なし</option>';
+  sel.innerHTML = sessions.map(s => `<option value="${s.id}" ${s.id === reviewSessionId ? 'selected' : ''}>${new Date(s.start).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}（${s.count}発・${gunProfile(s.gun).label.replace('（暫定補正）', '')}）${session && s.id === session.id ? ' ・実施中' : ''}</option>`).join('') || '<option>記録なし</option>';
   let list = (session && reviewSessionId === session.id) ? shots : ((await DB.byIndex('shots', 'sessionId', reviewSessionId)) || []);
   list = list.slice().sort((a, b) => a.no - b.no); const live = list.filter(s => !s.deleted);
   const sm = summarize(live.filter(s => s.quality !== 'suspect')); const nsus = live.filter(s => s.quality === 'suspect').length;
@@ -1302,14 +1355,14 @@ function rawToSamples(raw) {
 }
 function paintDetail() {
   const { shot, samples } = detail; let traj = null;
-  if (samples) { const a = analyzeWindow(samples, shot.t0Rel || 0, shot.bias); if (a) { traj = a.traj; Object.assign(shot, { predicted: a.predicted, band: bandOf(a.predicted, settings), quad: a.quad }); } }
-  $('dtTitle').textContent = `No.${shot.no}（${METHOD_LABEL[shot.method] || shot.method}${shot.t0Rel ? '・位置修正済み' : ''}）`;
+  if (samples) { const a = analyzeWindow(samples, shot.t0Rel || 0, shot.bias, shot.gun); if (a) { traj = a.traj; Object.assign(shot, { predicted: a.predicted, band: bandOf(a.predicted, settings), quad: a.quad }); } }
+  $('dtTitle').textContent = `No.${shot.no}（${gunProfile(shot.gun).label}・${METHOD_LABEL[shot.method] || shot.method}${shot.t0Rel ? '・位置修正済み' : ''}）`;
   $('dtScore').textContent = shot.predicted == null ? '--' : Math.round(shot.predicted);
   $('dtBand').textContent = shot.band || '–'; $('dtBand').className = 'band b-' + shot.band;
   $('dtCause').textContent = (shot.quality === 'suspect' ? '要確認：' : '') + causeText(shot);
   $('dtMeta').textContent = metaText(shot) + (shot.quality === 'suspect' ? '\n' + SUSPECT_NOTE : '') + (shot.preMax != null ? `\n撃発前1秒の最大 ${shot.preMax.toFixed(0)}dps ／ 撃発後の最大 ${shot.postMax.toFixed(0)}dps` : '');
   $('dtHero').className = 'hero b-' + shot.band + (shot.quality === 'suspect' ? ' suspect' : '');
-  const gk = guideKeyOf(shot); $('dtGuide').innerHTML = gk ? guideHtml(gk, shot.quad && shot.quad.angle != null ? severityOf(shot.quad.magnitude) : null) : '';
+  const gk = guideKeyOf(shot); $('dtGuide').innerHTML = gk ? guideHtml(gk, shot.quad && shot.quad.angle != null ? severityOf(shot.quad.magnitude, gunProfile(shot.gun).sevScale) : null) : '';
   if (traj) drawTraj(traj, { live: false }, $('dtTraj')); else $('dtTraj').innerHTML = '<text x="160" y="160" fill="#8a8f98" font-size="12" text-anchor="middle">生波形が保存されていません</text>';
 }
 function saveDetail() { const s = detail.shot; DB.put('shots', Object.assign({}, s)); if (session && s.sessionId === session.id) { renderStrip(); } renderReview(); }
@@ -1367,12 +1420,12 @@ async function exportCsv() {
     const all = ((session && sid === session.id) ? shots : ((await DB.byIndex('shots', 'sessionId', sid)) || [])).filter(s => !s.deleted).sort((a, b) => a.no - b.no);
     if (!all.length) { alert('出力できるショットがありません。'); return; }
     const b0 = all[0].bias || { gx: 0, gy: 0, gz: 0 }; const cache = {};
-    const header = 'No,時刻,検知方式,Mantisスコア,予測スコア,予測誤差,低下原因,最大ブレdps,ブレ量D,反動予期ヒント,フォロー減衰比,突き出しヒント,直前1秒spreadX,方向判定カテゴリ,方向判定角度deg,軌跡X,軌跡Y,軌跡t_ms,波形GyroX,波形GyroY,波形GyroZ,波形AccelX,波形AccelY,波形AccelZ,予測帯,判定低下要因,検知品質,撃発前最大dps,撃発後最大dps\n';
+    const header = 'No,時刻,検知方式,Mantisスコア,予測スコア,予測誤差,低下原因,最大ブレdps,ブレ量D,反動予期ヒント,フォロー減衰比,突き出しヒント,直前1秒spreadX,方向判定カテゴリ,方向判定角度deg,軌跡X,軌跡Y,軌跡t_ms,波形GyroX,波形GyroY,波形GyroZ,波形AccelX,波形AccelY,波形AccelZ,予測帯,判定低下要因,検知品質,撃発前最大dps,撃発後最大dps,銃種\n';
     const rows = []; let skipped = 0;
     for (const s of all) {
       const raw = await getRaw(s, cache); if (!raw) { skipped++; continue; }
       const t0 = s.t0Rel || 0; const samples = rawToSamples(raw).filter(x => x.t >= t0 - PRE_SHOT_MS && x.t <= t0 + EXPORT_POST_MS);
-      const a = analyzeWindow(samples, t0, s.bias); if (!a) { skipped++; continue; }
+      const a = analyzeWindow(samples, t0, s.bias, s.gun); if (!a) { skipped++; continue; }
       const j = (arr, f, d) => arr.map(v => f(v).toFixed(d)).join(' ');
       const cause = s.cause === 'その他（自由入力）' ? s.causeFree : s.cause;
       const pred = a.predicted != null ? a.predicted.toFixed(1) : ''; const err = (s.mantis != null && a.predicted != null) ? (s.mantis - a.predicted).toFixed(1) : '';
@@ -1382,7 +1435,7 @@ async function exportCsv() {
         `"${j(samples, p => p.gx, 2)}"`, `"${j(samples, p => p.gy, 2)}"`, `"${j(samples, p => p.gz, 2)}"`,
         `"${j(samples, p => p.ax, 3)}"`, `"${j(samples, p => p.ay, 3)}"`, `"${j(samples, p => p.az, 3)}"`, bandOf(a.predicted, settings) || '',
         causeText(Object.assign({}, s, { band: bandOf(a.predicted, settings), quad: q })), s.quality === 'suspect' ? '要確認' : '通常',
-        s.preMax != null ? s.preMax.toFixed(0) : '', s.postMax != null ? s.postMax.toFixed(0) : ''].join(','));
+        s.preMax != null ? s.preMax.toFixed(0) : '', s.postMax != null ? s.postMax.toFixed(0) : '', gunProfile(s.gun).label].join(','));
     }
     if (!rows.length) { alert('生波形が見つからず、CSVを作れませんでした。\n保存状況：ショット' + all.length + '件、生波形あり0件。\n「設定」で連続生データを保存しておくと、生波形から再構築できます。'); return; }
     const bias = `# 静止バイアス(dps): GyroX=${b0.gx.toFixed(3)}, GyroY=${b0.gy.toFixed(3)}, GyroZ=${b0.gz.toFixed(3)}\n`;
@@ -1428,6 +1481,7 @@ const SET_SPEC = {
     ['autoRearmS', '自動再待機（秒、0で無効）', 'スライド操作が検出されないとき、この時間で待機に戻る', 0, 60, 1],
   ],
   setBand: [
+    ['gun', '銃種', '採点モデルと程度の区分を切り替える。Glock17は1セッション分のデータによる暫定補正', 'select', { vp9: 'VP9', glock17: 'Glock17（暫定補正）' }],
     ['bandLow', '「低」の上限（予測点）', 'これ未満を「低」。実測70点未満に対応', 50, 90, 1],
     ['bandHigh', '「高」の下限（予測点）', 'これ以上を「高」。実測90点以上に対応', 70, 100, 1],
     ['trajScale', '軌跡の倍率（deg）', '小さいほど拡大表示', 1, 15, 0.5],
@@ -1441,13 +1495,16 @@ const SET_SPEC = {
 function renderSettings() {
   Object.entries(SET_SPEC).forEach(([box, items]) => {
     $(box).innerHTML = items.map(([k, label, hint, a, b, c]) => {
-      const bool = items.find(x => x[0] === k).includes('bool');
+      const bool = a === 'bool', sel = a === 'select';
       return `<div class="set-row"><div class="sl">${label}${hint ? `<small>${hint}</small>` : ''}</div>` +
-        (bool ? `<input type="checkbox" data-k="${k}" ${settings[k] ? 'checked' : ''}>` : `<input type="number" data-k="${k}" min="${a}" max="${b}" step="${c}" value="${settings[k]}">`) + '</div>';
+        (bool ? `<input type="checkbox" data-k="${k}" ${settings[k] ? 'checked' : ''}>`
+          : sel ? `<select class="set-sel" data-k="${k}">${Object.entries(b).map(([v, l]) => `<option value="${v}" ${settings[k] === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`
+          : `<input type="number" data-k="${k}" min="${a}" max="${b}" step="${c}" value="${settings[k]}">`) + '</div>';
     }).join('');
   });
   document.querySelectorAll('[data-k]').forEach(el => el.onchange = () => {
-    const k = el.dataset.k; settings[k] = el.type === 'checkbox' ? el.checked : (isNaN(parseFloat(el.value)) ? DEFAULTS[k] : parseFloat(el.value));
+    const k = el.dataset.k; settings[k] = el.type === 'checkbox' ? el.checked : el.tagName === 'SELECT' ? el.value : (isNaN(parseFloat(el.value)) ? DEFAULTS[k] : parseFloat(el.value));
+    if (k === 'gun') { if (session) session.gun = settings.gun; renderGun(); }
     saveSettings(); if (det) det.p = settings;
     if (k === 'beep' && settings.beep) { try { if (!audioCtx && window.AudioContext) audioCtx = new AudioContext(); if (audioCtx) audioCtx.resume(); } catch (e) {} beep('中'); }
     if (k === 'rawRecord' && !settings.rawRecord) flushRaw();
@@ -1477,7 +1534,7 @@ $('btnNewSession').onclick = async () => {
   await flushRaw(); newSession(); reviewSessionId = session.id; showIdle(); renderStrip();
 };
 $('btnCalib').onclick = calibrate;
-$('btnResetSettings').onclick = () => { if (!confirm('設定を初期値に戻します。')) return; settings = Object.assign({}, DEFAULTS); saveSettings(); det.p = settings; renderSettings(); };
+$('btnResetSettings').onclick = () => { if (!confirm('設定を初期値に戻します。')) return; settings = Object.assign({}, DEFAULTS); saveSettings(); det.p = settings; if (session) session.gun = settings.gun; renderSettings(); renderGun(); };
 $('selSession').onchange = (e) => { reviewSessionId = Number(e.target.value); renderReview(); };
 $('btnExportCsv').onclick = exportCsv; $('btnExportRaw').onclick = exportRaw;
 $('exShare').onclick = doShare; $('exCopy').onclick = doCopy; $('exDl').onclick = doDownload;
@@ -1491,6 +1548,10 @@ $('dtDelete').onclick = () => { const s = detail.shot; if (!s.deleted && !confir
 $('pkM10').onclick = () => nudge(-10); $('pkP10').onclick = () => nudge(10); $('pkCancel').onclick = closePicker;
 $('pkOK').onclick = () => { if (!pk) return; const cb = pk.onOK, sel = pk.sel; closePicker(); cb(sel); };
 
+function renderGun() {
+  const el = $('gunTag'); const prov = settings.gun === 'glock17';
+  el.textContent = gunProfile(settings.gun).label.replace('（暫定補正）', '') + (prov ? '（暫定）' : ''); el.className = 'gun-tag' + (prov ? ' prov' : '');
+}
 function showIdle() {
   $('resScore').textContent = '--'; $('resBand').textContent = '–'; $('resBand').className = 'band'; $('hero').className = 'hero';
   $('resCause').textContent = '撃発を待っています'; $('resTip').textContent = ''; $('resMeta').textContent = '撃発を自動で検知して採点します。'; $('trajSvg').innerHTML = '';
@@ -1500,7 +1561,7 @@ function showIdle() {
 (async function init() {
   await DB.open();
   makeDetector(); newSession(); reviewSessionId = session.id;
-  onDetState('ARMED', {}); showIdle(); renderStrip(); renderCalib(); updateBanner(); renderSettings();
+  onDetState('ARMED', {}); showIdle(); renderStrip(); renderCalib(); updateBanner(); renderSettings(); renderGun();
   if (!('bluetooth' in navigator)) $('btnConnect').title = 'Web Bluetooth対応ブラウザ（Bluefy等）で開いてください';
 })();
 </script>
