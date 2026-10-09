@@ -51,6 +51,22 @@
   .band.b-低 { background: #3a1616; color: var(--bad); }
   .hero-cause { font-size: 19px; font-weight: 700; margin-top: 10px; line-height: 1.3; }
   .hero-meta { font-size: 12px; color: var(--sub); margin-top: 4px; white-space: pre-line; }
+  .hero-tip { font-size: 14px; color: var(--accent); margin-top: 6px; line-height: 1.35; }
+  .hero-tip:empty { display: none; }
+  .guide { background: var(--panel2); border-radius: 10px; padding: 10px 12px; margin: 8px 0; font-size: 13px; line-height: 1.5; }
+  .guide .g-title { font-weight: 700; font-size: 14px; margin-bottom: 4px; display: flex; justify-content: space-between; }
+  .guide .g-count { color: var(--sub); font-weight: 500; font-size: 12px; }
+  .guide .g-what { color: var(--text); }
+  .guide .g-sev { color: var(--warn); font-size: 12px; margin-top: 4px; }
+  .guide .g-head { color: var(--sub); font-size: 11px; margin-top: 8px; }
+  .guide ul.g-fix { margin: 2px 0 0 0; padding-left: 18px; }
+  .guide ul.g-fix li { margin: 2px 0; }
+  .guide details.g-drill { margin-top: 6px; }
+  .guide details.g-drill summary { color: var(--accent); font-size: 12px; cursor: pointer; }
+  .guide details.g-drill div { margin-top: 4px; color: var(--sub); }
+  details.g-item { border-top: 1px solid var(--border); padding: 8px 0; }
+  details.g-item > summary { font-size: 13px; font-weight: 600; cursor: pointer; }
+  details.g-item > summary .n { color: var(--sub); font-weight: 400; margin-left: 6px; }
   .hero.suspect { border-style: dashed; border-color: #6b5a1c; border-left-width: 6px; }
   .hero.suspect .hero-meta { color: var(--warn); }
   .strip .bar.sus { background: repeating-linear-gradient(45deg, #6b5a1c, #6b5a1c 3px, #2a220c 3px, #2a220c 6px); }
@@ -131,6 +147,7 @@
     <div class="hero" id="hero">
       <div class="hero-row"><div class="score" id="resScore">--</div><div class="band" id="resBand">–</div></div>
       <div class="hero-cause" id="resCause">撃発を待っています</div>
+      <div class="hero-tip" id="resTip"></div>
       <div class="hero-meta" id="resMeta">接続して静止バイアスを記録すると、自動で採点します。</div>
     </div>
     <button class="rearm" id="btnRearm">次弾準備完了（手動）</button>
@@ -159,7 +176,9 @@
     <div class="panel" id="reviewSummary"></div>
     <div class="panel"><h2>点数の推移</h2><div class="chart-box"><svg id="trendSvg" viewBox="0 0 320 150"></svg></div>
       <p class="hint" id="trendHint"></p></div>
-    <div class="panel"><h2>判定された低下要因（中・低のショット）</h2><div id="causeHist"></div></div>
+    <div class="panel"><h2>判定された低下要因（中・低のショット、件数）</h2><div id="causeHist"></div>
+      <div id="causeGuides"></div>
+      <p class="hint">説明・対処は右利き・拳銃を前提とした一般的な内容です。方向による判定は候補であり、断定ではありません。</p></div>
     <div class="panel"><h2>ショット一覧（タップで詳細・修正）</h2>
       <table class="list"><thead><tr><th>No.</th><th>時刻</th><th>予測</th><th>帯</th><th>低下要因</th></tr></thead><tbody id="shotList"></tbody></table>
     </div>
@@ -199,6 +218,7 @@
     <div class="hero-meta" id="dtMeta"></div>
   </div>
   <div class="traj-wrap" style="max-width:300px;"><svg id="dtTraj" viewBox="0 0 320 320"></svg></div>
+  <div id="dtGuide"></div>
   <div class="eval-row"><label>参照スコア</label><input type="number" class="full" id="dtMantis" min="0" max="100" step="0.1" placeholder="Mantisスコア（任意）"></div>
   <div class="eval-row"><label>低下原因</label><select class="full" id="dtCauseSel"></select></div>
   <input type="text" class="full" id="dtCauseFree" placeholder="内容を入力" style="display:none;margin-bottom:6px;">
@@ -253,7 +273,7 @@ const DEFAULTS = {
   quietMs: 600,     // 静止がこの時間続いたら再待機
   autoRearmS: 8,    // スライド操作が検出されない場合に自動で再待機するまでの秒数（0で無効）
   bandLow: 72,      // 予測がこの点未満なら「低」
-  bandHigh: 88,     // 予測がこの点以上なら「高」（「高」では低下要因を表示しない）
+  bandHigh: 88,     // 予測がこの点以上なら「高」
   trajScale: 5,     // 軌跡表示の倍率（枠の半径に対応する角度[deg]）
   liveTraj: true,   // 待機中に照準の軌跡をリアルタイム表示
   beep: false,      // 採点結果を音で通知
@@ -423,13 +443,17 @@ function buildTrajectory(samples, t0) {
 //
 // 【検証】6セッション計407件（2026-10-09時点、フォロースルー不足1件を除く406件）：
 //   全体一致率 0.766（ラベルあり0.766、「なし」の再現率0.77）。
-//   予測88点以上（「高」帯）で要因を出さない場合は 0.783（「なし」の再現率0.91、ラベルあり0.751）。
 //   再現率: 右0.88 / 右斜め上0.47 / 上0.66 / 左0.73 / 左下0.78 / 下0.82 / 右下0.87
 //   適合率: 右0.72 / 右斜め上0.70 / 上0.82 / 左0.86 / 左下0.85 / 下0.68 / 右下0.88
 //   旧方式（±100ms・閾値0.05・6方向）は全体0.613。
 // 【押し込み（2026-10-09追加検証）】15件の判定先は 上7・なし6・左2。動きのある10件の平均方向は115度で
 //   銃口上がり(87度)と重なり、方向では区別できない。左斜め上の扇形に入るのは1件のみ。
 //   このため上方向のラベルに押し込みを併記し、左斜め上は引き続き未定義とした。
+// 【程度（2026-10-09追加）】変位の大きさで3段階に分け、動き量(deg)と併せて表示する。
+//   軽度 0.3〜0.6 / 中度 0.6〜1.0 / 重度 1.0以上。
+//   方向が出たショットの大きさ中央値は、予測帯 低1.18・中0.85・高0.41。Mantisスコアとの相関は-0.54（大きいほど低得点）。
+//   予測88点以上（「高」帯）でも方向は表示する（帯ごとの差は程度で読む）。ただし高帯で方向が出た23件のうち
+//   Mantisの低下原因と一致したのは22%（52%はMantis側が原因なし）で、高帯の表示は軽い傾向として扱う。
 // 【限界】
 //  - 左下は握り込みすぎ／トリガースラップの角度が重なり、方向のみでは区別できない。
 //  - トリガースラップは下方向にも出る（30件中8件）。
@@ -440,7 +464,16 @@ function buildTrajectory(samples, t0) {
 // =========================================================
 const QUADRANT_WINDOW_MS = 200;      // 方向判定に使う窓（T0前後）
 const QUADRANT_MIN_MAGNITUDE = 0.3;  // これ未満の動きは方向を判定しない（deg）
-const QUADRANT_SUPPRESS_SCORE = 88;  // 予測点数がこれ以上なら低下要因を表示しない（「高」帯）
+const QUADRANT_SEVERITY = [         // 程度の区分（変位の大きさ、deg）
+  { max: 0.6, label: '軽度' },
+  { max: 1.0, label: '中度' },
+  { max: Infinity, label: '重度' },
+];
+
+function severityOf(magnitude) {
+  if (magnitude == null || magnitude < QUADRANT_MIN_MAGNITUDE) return null;
+  return QUADRANT_SEVERITY.find(s => magnitude < s.max).label;
+}
 const QUADRANT_DEFS = [
   { key: 'right',       label: '指掛け過剰・サミング',           min: 337.5, max: 22.5 },
   { key: 'up-right',    label: '反動予期',                       min: 22.5,  max: 67.5 },
@@ -478,6 +511,7 @@ function checkQuadrantHint(trajectory) {
   return {
     angle,
     magnitude,
+    severity: severityOf(magnitude),
     quadrant: matched ? matched.key : null,
     quadrantLabel: matched ? matched.label : null,
   };
@@ -760,6 +794,114 @@ const CAUSE_OPTIONS = [
   'その他（自由入力）',
 ];
 
+// =========================================================
+// 低下要因の説明と対処要領（右利き・拳銃を前提とした一般的な内容）
+//   tip    : 錬成画面の結果欄に出す1行の要点
+//   what   : どういう状態か（1〜2文）
+//   fixes  : 対処の要点（2〜3項目）
+//   drill  : 矯正ドリル（タップで展開）
+// キーは方向判定(checkQuadrantHint)の quadrant と、方向なしの 'none'（高帯）・'small'（中・低帯）、未定義の 'upper-left'。
+// 方向は低下要因の候補であり断定ではない（Mantisの原因との一致率は約77%）。
+// =========================================================
+const CAUSE_GUIDE = {
+  'right': {
+    title: '指掛け過剰・サミング',
+    tip: '指は第1関節の腹で、引き金をまっすぐ後方へ',
+    what: '引き金に指を深く掛けすぎ（第2関節付近）、引くときに銃を右へ押している。または親指で銃の左側面を押して右へ向けている（サミング）。',
+    fixes: ['引き金には人差し指の第1関節の腹（指先寄りの中央）を当てる', '引き金は真後ろへ引く。横方向の力をかけない', '親指は力を抜き、フレームやスライドを押さない'],
+    drill: '銃口の上にコインや空薬莢を載せてドライファイアし、落とさずに撃発する。指の位置を少しずつ変え、軌跡が右へ流れなくなる位置を探す。',
+  },
+  'up-right': {
+    title: '反動予期',
+    tip: '撃発の瞬間を待たず、引き続けて照準を保持',
+    what: '撃発の瞬間を予期して手首を突き上げる・身構える動き。撃発の直前・直後に銃口が右上へ動く。',
+    fixes: ['いつ撃発するか分からない「サプライズブレイク」を意識し、引き金を一定の速さで引き続ける', '撃発後も照準を0.5〜1秒保持する（フォロースルー）', '撃発前に肩・腕に余分な力を入れない'],
+    drill: '実射ではボール＆ダミー（他者に空薬莢や擬製弾を混ぜて装填してもらう）で予期動作を確認する。ドライファイアでは撃発後に照準が上へ跳ねないことを毎回確認する。',
+  },
+  'up': {
+    title: '銃口上がり・押し込み',
+    tip: '手首を固定し、撃発後も照準を保持',
+    what: '撃発直前に手首を上げる、または掌底で銃を前・上へ押し込む動き。反動に先回りして銃を押さえにいくと出やすい。',
+    fixes: ['手首を固定し、掌底の押し付けを撃発の前後で変えない', 'グリップ圧は撃発前に決め、撃発中は一定に保つ', '撃発後も照準を0.5〜1秒保持する'],
+    drill: '的を置かずに照準だけを見てドライファイアし（ブランクウォール）、撃発時に照準が上へ動かないことを確認する。慣れたら的を置いて同じ動きを再現する。',
+  },
+  'left': {
+    title: '指のかかりが浅い',
+    tip: '指をもう少し深く、第1関節の腹で真後ろへ',
+    what: '指先だけで引き金に触れており、引くときに引き金を左へ押している。',
+    fixes: ['引き金に人差し指の第1関節の腹を当てる（指先だけで触れない）', '引き金は真後ろへ引く', '指の位置を毎回同じにする（グリップを握るたびに確認）'],
+    drill: '3〜5秒かけてゆっくり引き切るドライファイアで、照準が左へ流れない指の位置を確認する。コインを銃口上に載せる方法も有効。',
+  },
+  'lower-left': {
+    title: 'トリガースラップ・握り込みすぎ',
+    tip: '引き金指だけを一定の速さで動かす',
+    what: '引き金を急に叩く、または撃発に合わせて手全体（特に中指・薬指・小指）を握り込む。右利きで左下に出る典型的なガク引き。',
+    fixes: ['引き金は一定の速さで滑らかに引き切る（叩かない）', '握力は撃発前に決め、撃発中は変えない。動かすのは引き金指だけ', '撃発後は引き金から指を離さず、リセット位置まで戻す'],
+    drill: '3〜5秒かけて引き切るスロー撃発から始め、照準が動かなければ少しずつ速くする。握ったまま引き金指だけを動かす分離練習を併せて行う。',
+  },
+  'down': {
+    title: '突き出し・銃口下がり',
+    tip: '撃発を予期せず、腕と手首を固定',
+    what: '反動に備えて撃発直前に銃を前へ押し出す、または手首を下げる動き（フリンチ）。',
+    fixes: ['撃発の瞬間を予測せず、引き金を一定の速さで引き続ける', '腕は伸ばしたまま固定し、前後に動かさない', '撃発後も照準を保持する'],
+    drill: '実射ではボール＆ダミーで突き出しを確認する。ドライファイアでは撃発後に照準が下へ沈まないことを毎回確認する。',
+  },
+  'lower-right': {
+    title: '引き金を引きながら握り込み',
+    tip: '握りを一定に保ち、引き金指だけ動かす',
+    what: '引き金を引くと同時に手のひらや親指の付け根で握り込み、銃を右下へひねっている。',
+    fixes: ['握力は撃発前に決めて一定に保つ', '引き金指の動きと握りを分ける', '親指の付け根に余分な力を入れない'],
+    drill: '握ったまま引き金指だけを動かす分離練習と、3〜5秒かけて引き切るスロー撃発を組み合わせる。',
+  },
+  'upper-left': {
+    title: '左斜め上方向（未検証）',
+    tip: '撃発後も照準を保持',
+    what: '掌底での押し込み、または撃発直後に照準を外す動き（フォロースルー不足）の可能性。この方向は判定の裏付けがまだない。',
+    fixes: ['撃発後も照準を0.5〜1秒保持する', '掌底の押し付けを撃発の前後で変えない'],
+    drill: 'ブランクウォールのドライファイアで、撃発後の照準の動きを確認する。',
+  },
+  'none': {
+    title: '問題なし',
+    tip: '同じ手順を再現する',
+    what: '撃発前後の銃口の動きは小さい。',
+    fixes: ['グリップ・呼吸・引き金操作を同じ手順で再現する', '点数が下がり始めたら、休憩を挟んで集中を戻す'],
+    drill: '',
+  },
+  'small': {
+    title: '動きが小さく、方向の特徴なし',
+    tip: '照準が落ち着いてから引き切る',
+    what: '撃発前後200msに方向のある動きは小さいが、予測点は中・低。撃発前の照準のぶれ（広がり）や、撃発瞬間の小刻みな揺れが減点の要因と考えられる。',
+    fixes: ['照準が落ち着いてから引き切る（呼吸を止めるタイミングを一定に）', '姿勢と構えを安定させ、照準のぶれを小さくする', '引き金を引き始めたら途中で止めない'],
+    drill: '照準だけを保持するホールド練習（10秒程度）で、ぶれが小さくなる姿勢・呼吸を確認する。',
+  },
+};
+// 程度ごとの読み方
+const SEVERITY_NOTE = {
+  '軽度': '軽度：傾向の段階。高得点のショットでも見られる',
+  '中度': '中度：点数に影響している可能性が高い',
+  '重度': '重度：最優先で矯正する',
+};
+
+function guideKeyOf(shot) {
+  const q = shot.quad;
+  if (!q) return null;
+  if (q.angle == null) return shot.band === '高' ? 'none' : 'small';
+  return q.quadrant || 'upper-left';
+}
+function escHtml(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+// 説明・対処のHTML（ショット詳細・振り返りの集計で共用）。sevは程度（無ければ省略）
+function guideHtml(key, sev, opts) {
+  const g = CAUSE_GUIDE[key]; if (!g) return '';
+  const o = opts || {};
+  return `<div class="guide">` +
+    (o.title ? `<div class="g-title">${escHtml(g.title)}${o.count ? `<span class="g-count">${o.count}発</span>` : ''}</div>` : '') +
+    `<div class="g-what">${escHtml(g.what)}</div>` +
+    (sev && SEVERITY_NOTE[sev] ? `<div class="g-sev">${escHtml(SEVERITY_NOTE[sev])}</div>` : '') +
+    `<div class="g-head">対処</div><ul class="g-fix">${g.fixes.map(f => `<li>${escHtml(f)}</li>`).join('')}</ul>` +
+    (g.drill ? `<details class="g-drill"><summary>矯正ドリル</summary><div>${escHtml(g.drill)}</div></details>` : '') +
+    `</div>`;
+}
+
 
 // =========================================================
 // ここから下はUI・保存・BLE（DOM依存）
@@ -857,7 +999,7 @@ function onDetState(st, info) {
 function onDetShot() {
   trajFrozen = true;
   $('resScore').textContent = '…'; $('resBand').textContent = '–'; $('resBand').className = 'band';
-  $('hero').className = 'hero'; $('resCause').textContent = '撃発を検知。採点中…'; $('resMeta').textContent = '';
+  $('hero').className = 'hero'; $('resCause').textContent = '撃発を検知。採点中…'; $('resTip').textContent = ''; $('resMeta').textContent = '';
 }
 
 // ---- 撃発確定 → 採点 → 記録 ----
@@ -899,13 +1041,23 @@ function fillRaw(t0) {
 }
 
 // ---- 結果表示 ----
-function causeText(shot) {
-  if (shot.band === '高') return '問題なし';
+// 低下要因の名称（程度を含まない。集計のキーに使う）
+function causeKey(shot) {
   const q = shot.quad;
   if (!q) return '方向を判定できません（データ不足）';
-  if (q.quadrant) return q.quadrantLabel + 'の可能性';
-  if (q.angle == null) return '動きが小さく、方向の特徴なし';
+  if (q.angle == null) return shot.band === '高' ? '問題なし' : '動きが小さく、方向の特徴なし';
+  if (q.quadrant) return q.quadrantLabel;
   return '左斜め上方向（押し込み等・未検証）';
+}
+// 程度の表示（例: 軽度（0.42°））。「高」帯でも方向が出れば表示し、帯ごとの違いは程度で読む
+function severityText(q) {
+  if (!q || q.angle == null) return '';
+  return `${severityOf(q.magnitude)}（${q.magnitude.toFixed(2)}°）`;
+}
+function causeText(shot) {
+  const q = shot.quad; const key = causeKey(shot);
+  if (!q || q.angle == null) return key;
+  return (q.quadrant ? key + 'の可能性' : key) + '｜' + severityText(q);
 }
 function metaText(shot) {
   const q = shot.quad; const tm = new Date(shot.wall).toLocaleTimeString('ja-JP');
@@ -918,7 +1070,9 @@ function showResult(shot) {
   $('resScore').textContent = shot.predicted == null ? '--' : Math.round(shot.predicted);
   $('resBand').textContent = shot.band || '–'; $('resBand').className = 'band b-' + shot.band;
   $('hero').className = 'hero b-' + shot.band + (sus ? ' suspect' : '');
-  $('resCause').textContent = (sus ? '要確認：' : '') + causeText(shot); $('resMeta').textContent = metaText(shot) + (sus ? '\n' + SUSPECT_NOTE : '');
+  $('resCause').textContent = (sus ? '要確認：' : '') + causeText(shot);
+  const gk = guideKeyOf(shot); $('resTip').textContent = gk && CAUSE_GUIDE[gk] ? '対処：' + CAUSE_GUIDE[gk].tip : '';
+  $('resMeta').textContent = metaText(shot) + (sus ? '\n' + SUSPECT_NOTE : '');
 }
 function beep(band) {
   if (!settings.beep || !audioCtx) return;
@@ -1103,9 +1257,11 @@ async function renderReview() {
       `<div class="bb"><div class="lab" style="color:${c}">${l}</div><div class="track"><div class="fill" style="width:${n / Math.max(1, sm.n) * 100}%;background:${c}"></div></div><div class="n">${n}発 ${Math.round(n / Math.max(1, sm.n) * 100)}%</div></div>`).join('')}</div>` :
     '<h2>集計</h2><p class="hint">このセッションにはまだショットがありません。</p>';
   renderTrend(live);
-  const cnt = {}; live.filter(s => s.band !== '高' && s.quality !== 'suspect').forEach(s => { const t = causeText(s).replace('の可能性', ''); cnt[t] = (cnt[t] || 0) + 1; });
+  const cnt = {}; live.filter(s => s.band !== '高' && s.quality !== 'suspect').forEach(s => { const k = guideKeyOf(s); if (k) cnt[k] = (cnt[k] || 0) + 1; });
   const entries = Object.entries(cnt).sort((a, b) => b[1] - a[1]); const mx = entries.length ? entries[0][1] : 1;
-  $('causeHist').innerHTML = entries.length ? entries.map(([k, n]) => `<div class="cause-row"><div class="cl">${k}</div><div class="ct"><div class="cf" style="width:${n / mx * 100}%"></div></div><div class="cn">${n}</div></div>`).join('') : '<p class="hint">中・低のショットはありません。</p>';
+  $('causeHist').innerHTML = entries.length ? entries.map(([k, n]) => `<div class="cause-row"><div class="cl">${CAUSE_GUIDE[k].title}</div><div class="ct"><div class="cf" style="width:${n / mx * 100}%"></div></div><div class="cn">${n}</div></div>`).join('') : '<p class="hint">中・低のショットはありません。</p>';
+  // 多かった要因の順に説明と対処を表示（最も多い要因のみ最初から開く）
+  $('causeGuides').innerHTML = entries.map(([k, n], i) => `<details class="g-item"${i === 0 ? ' open' : ''}><summary>${CAUSE_GUIDE[k].title}<span class="n">${n}発</span></summary>${guideHtml(k, null)}</details>`).join('');
   $('shotList').innerHTML = list.slice().reverse().map(s => `<tr class="row-shot" data-key="${s.key}" style="${s.deleted ? 'opacity:.35;text-decoration:line-through;' : ''}">
     <td>${s.no}</td><td>${new Date(s.wall).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</td>
     <td style="font-variant-numeric:tabular-nums;">${s.predicted == null ? '--' : Math.round(s.predicted)}${s.mantis != null ? `<div style="font-size:10px;color:var(--sub)">参照${s.mantis}</div>` : ''}</td>
@@ -1153,6 +1309,7 @@ function paintDetail() {
   $('dtCause').textContent = (shot.quality === 'suspect' ? '要確認：' : '') + causeText(shot);
   $('dtMeta').textContent = metaText(shot) + (shot.quality === 'suspect' ? '\n' + SUSPECT_NOTE : '') + (shot.preMax != null ? `\n撃発前1秒の最大 ${shot.preMax.toFixed(0)}dps ／ 撃発後の最大 ${shot.postMax.toFixed(0)}dps` : '');
   $('dtHero').className = 'hero b-' + shot.band + (shot.quality === 'suspect' ? ' suspect' : '');
+  const gk = guideKeyOf(shot); $('dtGuide').innerHTML = gk ? guideHtml(gk, shot.quad && shot.quad.angle != null ? severityOf(shot.quad.magnitude) : null) : '';
   if (traj) drawTraj(traj, { live: false }, $('dtTraj')); else $('dtTraj').innerHTML = '<text x="160" y="160" fill="#8a8f98" font-size="12" text-anchor="middle">生波形が保存されていません</text>';
 }
 function saveDetail() { const s = detail.shot; DB.put('shots', Object.assign({}, s)); if (session && s.sessionId === session.id) { renderStrip(); } renderReview(); }
@@ -1272,7 +1429,7 @@ const SET_SPEC = {
   ],
   setBand: [
     ['bandLow', '「低」の上限（予測点）', 'これ未満を「低」。実測70点未満に対応', 50, 90, 1],
-    ['bandHigh', '「高」の下限（予測点）', 'これ以上を「高」。実測90点以上に対応。「高」では低下要因を表示しない', 70, 100, 1],
+    ['bandHigh', '「高」の下限（予測点）', 'これ以上を「高」。実測90点以上に対応', 70, 100, 1],
     ['trajScale', '軌跡の倍率（deg）', '小さいほど拡大表示', 1, 15, 0.5],
   ],
   setMisc: [
@@ -1336,7 +1493,7 @@ $('pkOK').onclick = () => { if (!pk) return; const cb = pk.onOK, sel = pk.sel; c
 
 function showIdle() {
   $('resScore').textContent = '--'; $('resBand').textContent = '–'; $('resBand').className = 'band'; $('hero').className = 'hero';
-  $('resCause').textContent = '撃発を待っています'; $('resMeta').textContent = '撃発を自動で検知して採点します。'; $('trajSvg').innerHTML = '';
+  $('resCause').textContent = '撃発を待っています'; $('resTip').textContent = ''; $('resMeta').textContent = '撃発を自動で検知して採点します。'; $('trajSvg').innerHTML = '';
 }
 
 // ---- 起動 ----
