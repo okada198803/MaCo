@@ -14,7 +14,10 @@
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { margin: 0; background: var(--bg); color: var(--text);
     font-family: -apple-system, "Hiragino Sans", "Segoe UI", sans-serif; }
-  body { padding: calc(10px + var(--safe-t)) 12px calc(76px + var(--safe-b)) 12px; }
+  /* 画面全体を1画面に収め、内容は main の中でスクロールする（錬成画面は1画面目に点数・次弾準備・軌跡が収まる） */
+  body { display: flex; flex-direction: column; height: 100vh; height: 100dvh; overflow: hidden;
+    padding: calc(8px + var(--safe-t)) 12px calc(54px + var(--safe-b)) 12px; }
+  main { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
   button { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 10px;
     padding: 11px 14px; font-size: 14px; font-family: inherit; }
   button:active { transform: scale(0.97); }
@@ -22,17 +25,22 @@
   button:disabled { opacity: 0.4; }
   input, select { font-family: inherit; }
 
-  .top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
-  .top-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .top { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 8px; flex-shrink: 0; }
+  .top-left { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; }
+  .top-right { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+  .top-right button { padding: 9px 11px; font-size: 13px; }
+  .btn-rearm { border: 2px solid #2f6f4a; color: var(--good); background: #0f1d15; font-weight: 700; }
+  .btn-rearm:disabled { border-color: var(--border); color: var(--sub); background: var(--panel); opacity: 0.5; }
+  #btnConnect.on { background: var(--panel); color: var(--good); border: 1px solid #2f6f4a; font-weight: 600; opacity: 1; }
   .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); flex-shrink: 0; }
   .dot.on { background: var(--good); }
-  .state-pill { font-size: 13px; font-weight: 700; padding: 5px 10px; border-radius: 999px; background: var(--panel2);
+  .state-pill { font-size: 12px; font-weight: 700; padding: 5px 9px; border-radius: 999px; background: var(--panel2);
     color: var(--sub); white-space: nowrap; }
   .state-pill.ARMED { background: #12301f; color: var(--good); }
   .state-pill.PENDING, .state-pill.CONFIRM, .state-pill.FIRED { background: #3a2f0d; color: var(--warn); }
   .state-pill.WAIT_SLIDE, .state-pill.SLIDE { background: #1c2733; color: #7cb7f0; }
-  .banner { font-size: 12px; color: var(--warn); background: #2a220c; border: 1px solid #4a3b12; border-radius: 8px;
-    padding: 8px 10px; margin-bottom: 10px; line-height: 1.4; }
+  .banner { font-size: 11px; color: var(--warn); background: #2a220c; border: 1px solid #4a3b12; border-radius: 8px;
+    padding: 6px 9px; margin-bottom: 8px; line-height: 1.35; flex-shrink: 0; }
 
   .view { display: none; } .view.active { display: block; }
   .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
@@ -71,8 +79,24 @@
   .hero.suspect .hero-meta { color: var(--warn); }
   .strip .bar.sus { background: repeating-linear-gradient(45deg, #6b5a1c, #6b5a1c 3px, #2a220c 3px, #2a220c 6px); }
   .tag-sus { display: inline-block; font-size: 10px; color: var(--warn); border: 1px solid #6b5a1c; border-radius: 4px; padding: 0 4px; margin-left: 4px; }
-  .rearm { width: 100%; padding: 14px; font-size: 15px; font-weight: 700; margin-bottom: 12px; border-radius: 12px;
-    border: 2px solid #2f6f4a; color: var(--good); background: #0f1d15; }
+  /* 錬成画面の1画面目：結果欄（固定高さ）＋軌跡（残りの高さいっぱい） */
+  #viewTrain.active { height: 100%; }
+  .first-screen { height: 100%; display: flex; flex-direction: column; }
+  #hero { display: grid; grid-template-columns: auto 1fr; column-gap: 12px; align-items: center;
+    padding: 10px 12px; margin-bottom: 8px; min-height: 108px; flex-shrink: 0; }
+  #hero .hero-row { grid-row: 1 / 4; flex-direction: column; justify-content: center; gap: 4px; min-width: 76px; }
+  #hero .score { font-size: 60px; letter-spacing: -1px; }
+  #hero .band { width: 64px; height: 30px; font-size: 18px; border-radius: 8px; }
+  #hero .hero-cause { grid-column: 2; font-size: 15px; margin-top: 0; }
+  #hero .hero-tip { grid-column: 2; font-size: 12.5px; margin-top: 4px; }
+  #hero .hero-meta { grid-column: 2; font-size: 11px; margin-top: 3px; }
+  .traj-panel { flex: 1; min-height: 160px; display: flex; flex-direction: column; margin-bottom: 8px; padding: 8px 10px; }
+  .traj-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2px; }
+  .traj-head h2 { margin: 0; flex-shrink: 0; }
+  .traj-head .traj-cap { margin: 0; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .traj-fit { flex: 1; min-height: 0; position: relative; }
+  .traj-fit svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .scroll-hint { text-align: center; font-size: 10px; color: var(--sub); margin: -2px 0 8px 0; flex-shrink: 0; }
   .row { display: flex; gap: 8px; margin-bottom: 12px; } .row button { flex: 1; }
 
   .traj-wrap { width: 100%; aspect-ratio: 1 / 1; max-width: 340px; margin: 0 auto; }
@@ -89,7 +113,7 @@
   /* タブ */
   .tabs { position: fixed; left: 0; right: 0; bottom: 0; display: flex; background: #0e1013; border-top: 1px solid var(--border);
     padding-bottom: var(--safe-b); z-index: 20; }
-  .tabs button { flex: 1; border: none; border-radius: 0; background: transparent; color: var(--sub); padding: 14px 4px; font-size: 14px; font-weight: 600; }
+  .tabs button { flex: 1; border: none; border-radius: 0; background: transparent; color: var(--sub); padding: 12px 4px; font-size: 14px; font-weight: 600; }
   .tabs button.active { color: var(--accent); box-shadow: inset 0 3px 0 var(--accent); }
 
   /* 振り返り */
@@ -116,7 +140,6 @@
     padding: 8px; font-size: 14px; text-align: right; }
   .set-row select.set-sel { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px; font-size: 14px; max-width: 170px; }
   .gun-tag { font-size: 12px; font-weight: 600; color: var(--sub); border: 1px solid var(--border); border-radius: 999px; padding: 4px 9px; white-space: nowrap; }
-  .gun-tag.prov { color: var(--warn); border-color: #4a3b12; }
   .set-row input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--accent); }
 
   /* シート */
@@ -140,24 +163,28 @@
 
 <header class="top">
   <div class="top-left"><span class="dot" id="connDot"></span><span class="state-pill" id="statePill">未接続</span><span class="gun-tag" id="gunTag">VP9</span></div>
-  <button class="primary" id="btnConnect">BLE接続</button>
+  <div class="top-right">
+    <button class="btn-rearm" id="btnRearm">次弾準備</button>
+    <button class="primary" id="btnConnect">BLE接続</button>
+  </div>
 </header>
 <div class="banner" id="banner" style="display:none;"></div>
 
 <main>
   <!-- 錬成 -->
   <section class="view active" id="viewTrain">
-    <div class="hero" id="hero">
-      <div class="hero-row"><div class="score" id="resScore">--</div><div class="band" id="resBand">–</div></div>
-      <div class="hero-cause" id="resCause">撃発を待っています</div>
-      <div class="hero-tip" id="resTip"></div>
-      <div class="hero-meta" id="resMeta">接続して静止バイアスを記録すると、自動で採点します。</div>
-    </div>
-    <button class="rearm" id="btnRearm">次弾準備完了（手動）</button>
-    <div class="panel">
-      <h2 id="trajTitle">軌跡</h2>
-      <div class="traj-wrap"><svg id="trajSvg" viewBox="0 0 320 320"></svg></div>
-      <div class="traj-cap" id="trajCap">待機中：照準の動きをリアルタイム表示</div>
+    <div class="first-screen">
+      <div class="hero" id="hero">
+        <div class="hero-row"><div class="score" id="resScore">--</div><div class="band" id="resBand">–</div></div>
+        <div class="hero-cause" id="resCause">撃発を待っています</div>
+        <div class="hero-tip" id="resTip"></div>
+        <div class="hero-meta" id="resMeta">接続して静止バイアスを記録すると、自動で採点します。</div>
+      </div>
+      <div class="panel traj-panel">
+        <div class="traj-head"><h2 id="trajTitle">軌跡（照準）</h2><div class="traj-cap" id="trajCap">リアルタイム</div></div>
+        <div class="traj-fit"><svg id="trajSvg" viewBox="0 0 320 320" preserveAspectRatio="xMidYMid meet"></svg></div>
+      </div>
+      <div class="scroll-hint">▼ 直近10発・手動追加・新規セッション</div>
     </div>
     <div class="panel">
       <h2>直近10発（本セッション）</h2>
@@ -646,43 +673,47 @@ function calcPredictedScore(samples, t0, trajectory) {
 }
 
 // =========================================================
-// 銃種プロファイル（2026-10-09 暫定）
+// 銃種プロファイル（2026-10-11 改訂）
 // VP9: 6セッション407発で学習した既定モデル（上のPREDICT_WEIGHTS）。
-// Glock17: VP9とGlock(1セッション80発)を合わせ、銃種を特徴量に加えて学習したモデルのGlock側の重み。
-//   同じMantisスコアでもGlockは銃口の動きが大きく（撃発後100msの変位が50〜90点帯で2〜3倍、撃発前100msも約1.5倍）、
-//   VP9モデルのままでは平均6.5点低く出る（MAE 8.70、±10点以内70%）。
-//   このモデルではGlockのCV(5分割)で MAE 7.15、±10点以内77%。
-//   程度の区分も、方向が出たショットの動き量がGlockで約1.7倍（Mantis 0〜90点帯）のため、境界を1.7倍にする。
-//   Glockは1セッションのみで、銃の違いと日の違いを分離できていない。2セッション目で再確認すること。
+// Glock17: VP9 6セッション＋Glock 2セッション(181発)を合わせ、銃種を特徴量に加えて学習したモデルのGlock側の重み。
+//   学習: Huber(δ=5)、L2 alpha=10、Glockの発に4倍の重み（Glock発数が少ないため）。銃種フラグの係数は+3.2点。
+//   VP9モデルのままではGlockで平均約7点低く出る（2セッションとも同傾向: G1 -6.5、G2 -7.2）。
+//   同じ点数でもGlockは撃発前150msの角速度と撃発前の広がりが大きく、VP9モデルではそれを減点しすぎる。
+//   検証（Glockの1セッションを除いて学習→除いたセッションで評価、2通り）:
+//     VP9モデル MAE 9.56・±10点以内67% → このモデル MAE 5.58・±10点以内88%（G1 5.66、G2 5.52）。
+//     Glockの重み倍率とalphaは同じ検証で選んだため、0.3点程度は楽観を含む。
+//   程度の区分: 方向判定の動き量がGlockで約1.3倍（Mantis 0〜90点帯、2セッション合算）のため、境界を1.3倍にする。
+//   旧暫定版（G1のみで学習、区分1.7倍）はG2でMAE 7.70。G1で見えた撃発後の大きな変位はG2では再現しなかった。
+//   VP9にこの混合モデルを使うとVP9の精度が落ちる（LOSO MAE 5.87→6.2前後）ため、VP9は既定モデルのまま。
 // =========================================================
 const GUN_PROFILES = {
   vp9: { label: 'VP9', intercept: PREDICT_INTERCEPT, weights: PREDICT_WEIGHTS, sevScale: 1 },
-  glock17: { label: 'Glock17（暫定補正）', sevScale: 1.7,
-  intercept: 99.448774,
+  glock17: { label: 'Glock17', sevScale: 1.3,
+  intercept: 96.793465,
   weights: [
-      0.517488,  -0.305000,  // [-400,-375)ms
-      0.282454,   0.923224,  // [-375,-350)ms
-     -0.109046,  -0.302361,  // [-350,-325)ms
-      1.553040,   0.990422,  // [-325,-300)ms
-      0.537741,   0.391629,  // [-300,-275)ms
-      0.581686,  -0.455613,  // [-275,-250)ms
-      1.163561,   1.115371,  // [-250,-225)ms
-      0.200023,   0.120277,  // [-225,-200)ms
-      0.276271,  -0.455737,  // [-200,-175)ms
-      0.232499,  -0.250196,  // [-175,-150)ms
-      0.603345,  -1.057273,  // [-150,-125)ms
-      0.036579,  -1.425011,  // [-125,-100)ms
-      0.184409,  -1.580970,  // [-100,-75)ms
-     -0.238323,  -1.565738,  // [-75,-50)ms
-      0.234826,  -1.029107,  // [-50,-25)ms
-      0.058858,  -0.105368,  // [-25,+0)ms
-     -0.050147,  -0.229074,  // [+0,+25)ms
-      0.126889,   0.008915,  // [+25,+50)ms
-      0.100050,  -0.465925,  // [+50,+75)ms
-     -0.075803,   0.101299,  // [+75,+100)ms
-     -4.306936,  -0.844102,  // |dx|, |dy|
-    -44.286535, -41.935797,  // sx, sy
-      0.182250,              // 撃発瞬間の最大角速度
+     -0.194983,  -0.674929,  // [-400,-375)ms
+     -0.298059,   0.811114,  // [-375,-350)ms
+     -0.950551,   1.112806,  // [-350,-325)ms
+      0.883928,  -0.095682,  // [-325,-300)ms
+      0.593624,   0.739922,  // [-300,-275)ms
+      1.253461,   0.468826,  // [-275,-250)ms
+     -0.308609,   1.918671,  // [-250,-225)ms
+     -0.294617,   0.678407,  // [-225,-200)ms
+      0.221813,  -0.182509,  // [-200,-175)ms
+      0.901001,  -0.268162,  // [-175,-150)ms
+      0.200493,  -1.099059,  // [-150,-125)ms
+      0.606625,  -1.186372,  // [-125,-100)ms
+      1.107184,  -1.085358,  // [-100,-75)ms
+      0.426081,  -1.685803,  // [-75,-50)ms
+      0.469226,  -1.427792,  // [-50,-25)ms
+      0.083778,  -0.237622,  // [-25,+0)ms
+     -0.183863,  -0.130883,  // [+0,+25)ms
+      0.136149,  -0.032511,  // [+25,+50)ms
+      0.133137,  -0.698197,  // [+50,+75)ms
+      0.098447,  -0.327997,  // [+75,+100)ms
+     -2.302876,   1.994501,  // |dx|, |dy|
+    -46.935328, -70.076205,  // sx, sy
+      0.368496,              // 撃発瞬間の最大角速度
   ],
   },
 };
@@ -711,7 +742,7 @@ function analyzeWindow(samples, t0, bias, gun) {
 
 // ---- 撃発検知（ストリーミング）----
 // 状態: ARMED(待機) → PENDING(候補の判定中) → CONFIRM(前後の静止を確認中) → FIRED(撃発・採点中) → WAIT_SLIDE(スライド操作待ち)
-//       → SLIDE(スライド操作中) → 静止が続くと ARMED。手動の「次弾準備完了」でいつでも ARMED。
+//       → SLIDE(スライド操作中) → 静止が続くと ARMED。手動の「次弾準備」でいつでも ARMED。
 class ShotDetector {
   constructor(params, handlers) {
     this.p = params; this.h = handlers || {};
@@ -1016,7 +1047,7 @@ let rawBuf = [], rawChunkIdx = 0;        // 連続生データ記録
 let audioCtx = null, wakeLock = null;
 let lastReject = null, rejectLog = [];
 
-const STATE_LABEL = { ARMED: '待機中', PENDING: '判定中', CONFIRM: '判定中', FIRED: '撃発検知', WAIT_SLIDE: 'スライド操作待ち', SLIDE: 'スライド操作中' };
+const STATE_LABEL = { ARMED: '待機中', PENDING: '判定中', CONFIRM: '判定中', FIRED: '撃発検知', WAIT_SLIDE: 'スライド待ち', SLIDE: 'スライド中' };
 const METHOD_LABEL = { auto: '自動検知(錬成)', manual: '手動追加(錬成)' };
 
 function newSession() {
@@ -1043,7 +1074,7 @@ function onDetState(st, info) {
   if (st === 'ARMED') {
     trajFrozen = false;
     $('trajTitle').textContent = '軌跡（照準）';
-    $('trajCap').textContent = settings.liveTraj ? '待機中：照準の動きをリアルタイム表示' : '待機中';
+    $('trajCap').textContent = settings.liveTraj ? 'リアルタイム' : '待機中';
     if (!settings.liveTraj) $('trajSvg').innerHTML = '';
   }
   $('btnRearm').disabled = !connected || st === 'ARMED';
@@ -1072,7 +1103,7 @@ function finalizeShot(t0, method = 'auto', meta) {
   lastShotShown = shot;
   showResult(shot); drawTraj(a.traj, { live: false });
   trajFrozen = true;
-  $('trajTitle').textContent = '軌跡 No.' + shot.no; $('trajCap').textContent = '確定した撃発の軌跡（青→黄→×→赤）。スライド操作後に照準表示へ戻ります';
+  $('trajTitle').textContent = '軌跡 No.' + shot.no; $('trajCap').textContent = '青→黄→×(撃発)→赤　スライド操作後に照準表示へ';
   renderStrip(); beep(band);
   persistSession(); DB.put('shots', Object.assign({}, shot));
   if (method === 'manual') {
@@ -1203,7 +1234,7 @@ async function connectBle() {
 }
 function setConnected(c) {
   connected = c; $('connDot').classList.toggle('on', c);
-  $('btnConnect').textContent = c ? '接続中' : 'BLE接続'; $('btnConnect').disabled = c;
+  $('btnConnect').textContent = c ? '接続中' : 'BLE接続'; $('btnConnect').disabled = c; $('btnConnect').classList.toggle('on', c);
   if (c) { det.hardReset(); lastLiveDraw = 0; }
   onDetState(det.state, {}); updateBanner();
 }
@@ -1295,7 +1326,7 @@ async function loadSessions() {
 async function renderReview() {
   const sessions = await loadSessions(); const sel = $('selSession');
   if (reviewSessionId == null && session) reviewSessionId = session.id;
-  sel.innerHTML = sessions.map(s => `<option value="${s.id}" ${s.id === reviewSessionId ? 'selected' : ''}>${new Date(s.start).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}（${s.count}発・${gunProfile(s.gun).label.replace('（暫定補正）', '')}）${session && s.id === session.id ? ' ・実施中' : ''}</option>`).join('') || '<option>記録なし</option>';
+  sel.innerHTML = sessions.map(s => `<option value="${s.id}" ${s.id === reviewSessionId ? 'selected' : ''}>${new Date(s.start).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}（${s.count}発・${gunProfile(s.gun).label}）${session && s.id === session.id ? ' ・実施中' : ''}</option>`).join('') || '<option>記録なし</option>';
   let list = (session && reviewSessionId === session.id) ? shots : ((await DB.byIndex('shots', 'sessionId', reviewSessionId)) || []);
   list = list.slice().sort((a, b) => a.no - b.no); const live = list.filter(s => !s.deleted);
   const sm = summarize(live.filter(s => s.quality !== 'suspect')); const nsus = live.filter(s => s.quality === 'suspect').length;
@@ -1481,7 +1512,7 @@ const SET_SPEC = {
     ['autoRearmS', '自動再待機（秒、0で無効）', 'スライド操作が検出されないとき、この時間で待機に戻る', 0, 60, 1],
   ],
   setBand: [
-    ['gun', '銃種', '採点モデルと程度の区分を切り替える。Glock17は1セッション分のデータによる暫定補正', 'select', { vp9: 'VP9', glock17: 'Glock17（暫定補正）' }],
+    ['gun', '銃種', '採点モデルと程度の区分を切り替える', 'select', { vp9: 'VP9', glock17: 'Glock17' }],
     ['bandLow', '「低」の上限（予測点）', 'これ未満を「低」。実測70点未満に対応', 50, 90, 1],
     ['bandHigh', '「高」の下限（予測点）', 'これ以上を「高」。実測90点以上に対応', 70, 100, 1],
     ['trajScale', '軌跡の倍率（deg）', '小さいほど拡大表示', 1, 15, 0.5],
@@ -1549,8 +1580,7 @@ $('pkM10').onclick = () => nudge(-10); $('pkP10').onclick = () => nudge(10); $('
 $('pkOK').onclick = () => { if (!pk) return; const cb = pk.onOK, sel = pk.sel; closePicker(); cb(sel); };
 
 function renderGun() {
-  const el = $('gunTag'); const prov = settings.gun === 'glock17';
-  el.textContent = gunProfile(settings.gun).label.replace('（暫定補正）', '') + (prov ? '（暫定）' : ''); el.className = 'gun-tag' + (prov ? ' prov' : '');
+  $('gunTag').textContent = gunProfile(settings.gun).label;
 }
 function showIdle() {
   $('resScore').textContent = '--'; $('resBand').textContent = '–'; $('resBand').className = 'band'; $('hero').className = 'hero';
