@@ -501,10 +501,13 @@ const QUADRANT_SEVERITY = [         // 程度の区分（変位の大きさ、de
   { max: Infinity, label: '重度' },
 ];
 
-// scale: 銃種による動きの大きさの違いを補正する倍率（区分の境界に掛ける。VP9=1）
-function severityOf(magnitude, scale = 1) {
-  if (magnitude == null || magnitude < QUADRANT_MIN_MAGNITUDE) return null;
-  return QUADRANT_SEVERITY.find(s => magnitude < s.max * scale).label;
+// bounds: [軽度の上限, 中度の上限]（deg）。銃種ごとに異なる（VP9 [0.6,1.0]、Glock17 [0.78,1.3]、ガスブローバック [0.40,0.77]）
+// minMag: 方向を判定する最小の動き（VP9・Glock17 0.3、ガスブローバック 0.08）
+function severityOf(magnitude, bounds = [0.6, 1.0], minMag = QUADRANT_MIN_MAGNITUDE) {
+  if (magnitude == null || magnitude < minMag) return null;
+  if (magnitude < bounds[0]) return QUADRANT_SEVERITY[0].label;
+  if (magnitude < bounds[1]) return QUADRANT_SEVERITY[1].label;
+  return QUADRANT_SEVERITY[2].label;
 }
 const QUADRANT_DEFS = [
   { key: 'right',       label: '指掛け過剰・サミング',           min: 337.5, max: 22.5 },
@@ -522,8 +525,11 @@ function angleInSector(angle, q) {
   return angle >= q.min || angle < q.max; // 0度をまたぐ区間
 }
 
-function checkQuadrantHint(trajectory) {
-  const windowPts = trajectory.filter(p => p.t >= -QUADRANT_WINDOW_MS && p.t <= QUADRANT_WINDOW_MS);
+// opts: { from, to, min }（窓の始点・終点(ms)と最小の動き(deg)）。省略時は撃発前後200ms・0.3°。
+// ガスブローバックでは撃発後に反動が入るため、撃発前のみ(-200〜0ms)・0.08°を使う。
+function checkQuadrantHint(trajectory, opts) {
+  const o = Object.assign({ from: -QUADRANT_WINDOW_MS, to: QUADRANT_WINDOW_MS, min: QUADRANT_MIN_MAGNITUDE }, opts || {});
+  const windowPts = trajectory.filter(p => p.t >= o.from && p.t <= o.to);
   if (windowPts.length < 2) return null; // データ不足時は判定しない
 
   const first = windowPts[0];
@@ -533,7 +539,7 @@ function checkQuadrantHint(trajectory) {
 
   // 変化量が小さい場合は方向が不定（低下要因なし相当）なため判定しない
   const magnitude = Math.sqrt(dPan * dPan + dTilt * dTilt);
-  if (magnitude < QUADRANT_MIN_MAGNITUDE) return { angle: null, magnitude, quadrant: null };
+  if (magnitude < o.min) return { angle: null, magnitude, quadrant: null };
 
   let angle = Math.atan2(dTilt, dPan) * 180 / Math.PI;
   if (angle < 0) angle += 360; // 0〜360度に正規化
@@ -614,10 +620,16 @@ const PREDICT_WEIGHTS = [
 ];
 
 // 使用中のモデル（錬成アプリでは銃種の設定で切り替える。開発用アプリは常にこの既定値）
-let predictModel = { intercept: PREDICT_INTERCEPT, weights: PREDICT_WEIGHTS };
+// binCount: 時間ビンの数（-400msから25ms刻み）、dispTo: 変位の窓の終端(ms)、peakTo: 最大角速度の窓の終端(ms、この値未満)。
+// 既定は撃発後を含む構成(-400〜+100ms)。ガスブローバック用は撃発前のみ(binCount 16、dispTo 0、peakTo 0)。
+let predictModel = { intercept: PREDICT_INTERCEPT, weights: PREDICT_WEIGHTS, binCount: PREDICT_BIN_COUNT, dispTo: 100, peakTo: PREDICT_PEAK_TO_MS };
 
 function calcPredictedScore(samples, t0, trajectory) {
   const PREDICT_INTERCEPT = predictModel.intercept, PREDICT_WEIGHTS = predictModel.weights;
+  const PREDICT_BIN_COUNT = predictModel.binCount || 20;
+  const DISP_TO = predictModel.dispTo != null ? predictModel.dispTo : 100;
+  const PEAK_TO = predictModel.peakTo != null ? predictModel.peakTo : PREDICT_PEAK_TO_MS;
+  const NB = 2 * PREDICT_BIN_COUNT; // 軌跡・最大角速度の重みの開始位置
   if (!trajectory) return null;
   const endMs = PREDICT_BIN_START_MS + PREDICT_BIN_WIDTH_MS * PREDICT_BIN_COUNT;
   const win = samples.filter(s => (s.t - t0) >= PREDICT_BIN_START_MS && (s.t - t0) < endMs);
@@ -635,10 +647,10 @@ function calcPredictedScore(samples, t0, trajectory) {
     sumGx[k] += Math.abs(gx);
     sumGyz[k] += gyz;
     cnt[k] += 1;
-    if (rel >= PREDICT_PEAK_FROM_MS && rel < PREDICT_PEAK_TO_MS && gyz > peakGyz) peakGyz = gyz;
+    if (rel >= PREDICT_PEAK_FROM_MS && rel < PEAK_TO && gyz > peakGyz) peakGyz = gyz;
   });
   // 軌跡特徴：変位(T0-100〜+100、閉区間)と広がり(T0-400〜0、閉区間・母標準偏差)
-  const around = trajectory.filter(p => p.t >= -100 && p.t <= 100);
+  const around = trajectory.filter(p => p.t >= -100 && p.t <= DISP_TO);
   const pre = trajectory.filter(p => p.t >= -400 && p.t <= 0);
   if (around.length < 2 || pre.length < 2) return null;
   const absDx = Math.abs(around[around.length - 1].x - around[0].x);
@@ -656,10 +668,14 @@ function calcPredictedScore(samples, t0, trajectory) {
     raw += PREDICT_WEIGHTS[2 * k] * (sumGx[k] / cnt[k]);
     raw += PREDICT_WEIGHTS[2 * k + 1] * (sumGyz[k] / cnt[k]);
   }
-  raw += PREDICT_WEIGHTS[40] * absDx + PREDICT_WEIGHTS[41] * absDy;
-  raw += PREDICT_WEIGHTS[42] * sx + PREDICT_WEIGHTS[43] * sy;
-  raw += PREDICT_WEIGHTS[44] * Math.min(peakGyz, PREDICT_PEAK_CAP);
-  const predicted = Math.max(0, Math.min(100, raw)); // 0〜100にクリップ
+  raw += PREDICT_WEIGHTS[NB] * absDx + PREDICT_WEIGHTS[NB + 1] * absDy;
+  raw += PREDICT_WEIGHTS[NB + 2] * sx + PREDICT_WEIGHTS[NB + 3] * sy;
+  raw += PREDICT_WEIGHTS[NB + 4] * Math.min(peakGyz, PREDICT_PEAK_CAP);
+  let predicted = Math.max(0, Math.min(100, raw)); // 0〜100にクリップ
+  // 折れ線補正（ガスブローバックのみ）：折れ点(knee)未満は、折れ点からの差を slope 倍に広げる。
+  // GBBは撃発前の動きが同じでもMantisの点数がドライより低く出るため（低得点側で+17〜23点の過大予測）。
+  const cal = predictModel.calib;
+  if (cal && predicted < cal.knee) predicted = Math.max(0, cal.knee - cal.slope * (cal.knee - predicted));
   // 履歴・CSV互換のため、直前150msのGyroY・Z合成平均も保持する（予測自体には使わない）
   const pre150 = samples.filter(s => (s.t - t0) >= -150 && (s.t - t0) < 0);
   let meanMag = null;
@@ -687,8 +703,8 @@ function calcPredictedScore(samples, t0, trajectory) {
 //   VP9にこの混合モデルを使うとVP9の精度が落ちる（LOSO MAE 5.87→6.2前後）ため、VP9は既定モデルのまま。
 // =========================================================
 const GUN_PROFILES = {
-  vp9: { label: 'VP9', intercept: PREDICT_INTERCEPT, weights: PREDICT_WEIGHTS, sevScale: 1 },
-  glock17: { label: 'Glock17', sevScale: 1.3,
+  vp9: { label: 'VP9', mode: 'dry', intercept: PREDICT_INTERCEPT, weights: PREDICT_WEIGHTS, sev: [0.6, 1.0] },
+  glock17: { label: 'Glock17', mode: 'dry', sev: [0.78, 1.3],
   intercept: 96.793465,
   weights: [
      -0.194983,  -0.674929,  // [-400,-375)ms
@@ -716,8 +732,70 @@ const GUN_PROFILES = {
       0.368496,              // 撃発瞬間の最大角速度
   ],
   },
+  // ガスブローバック（2026-10-12、Glock17 GBB 1セッション30発で検証）
+  glock17_gbb: { label: 'Glock17 GBB', mode: 'gbb', sev: [0.40, 0.77],
+    quad: { from: -200, to: 0, min: 0.08 }, binCount: 16, dispTo: 0, peakTo: 0,
+    // 折れ線補正（2026-10-13、GBB 2セッション99発で推定）。96点以上はそのまま、96点未満は96点からの差を1.45倍。
+    // GBB2(70発、1.6〜98.5点)の5分割CV: 補正なし MAE 10.6 → 7.7。高得点のGBB1(30発)は 2.1 → 2.8。
+    calib: { knee: 96, slope: 1.45 },
+    intercept: 95.834022,
+    weights: [
+      0.334654,  -0.623202,  // [-400,-375)ms
+     -0.531492,   0.983550,  // [-375,-350)ms
+     -1.310776,   1.496992,  // [-350,-325)ms
+      0.587678,  -0.292944,  // [-325,-300)ms
+      0.621347,   1.045642,  // [-300,-275)ms
+      1.150646,   0.364722,  // [-275,-250)ms
+     -0.069881,   1.595226,  // [-250,-225)ms
+     -0.549470,   0.670020,  // [-225,-200)ms
+      0.398294,  -0.289944,  // [-200,-175)ms
+      0.857693,  -0.325719,  // [-175,-150)ms
+      0.258591,  -1.048146,  // [-150,-125)ms
+      0.478333,  -1.116332,  // [-125,-100)ms
+      1.194463,  -1.080882,  // [-100,-75)ms
+      0.474675,  -1.521400,  // [-75,-50)ms
+      0.297297,  -1.269815,  // [-50,-25)ms
+      0.074763,  -0.445003,  // [-25,+0)ms
+     -7.733229,  -1.342001,  // |dx|, |dy|（T0-100〜0ms）
+    -43.888213, -72.709551,  // sx, sy（T0-400〜0ms）
+      0.428704,              // 撃発前の最大角速度（T0-150〜0ms未満）
+    ],
+  },
 };
 function gunProfile(gun) { return GUN_PROFILES[gun] || GUN_PROFILES.vp9; }
+// 採点モデルを銃種に切り替え、プロファイルを返す
+function applyGunProfile(gun) {
+  const gp = gunProfile(gun);
+  predictModel = { intercept: gp.intercept, weights: gp.weights, binCount: gp.binCount || 20, dispTo: gp.dispTo != null ? gp.dispTo : 100, peakTo: gp.peakTo != null ? gp.peakTo : 50, calib: gp.calib || null };
+  return gp;
+}
+// 方向判定の条件（窓・最小の動き）
+function quadOptsOf(gun) { return gunProfile(gun).quad || null; }
+
+// =========================================================
+// ガスブローバックの撃発時刻（T0）
+// GBBは撃発直後にスライドが後退し、上下の角速度が1サンプル(10ms)で約200dpsに跳ね上がる。
+// 加速度差分のピークはこの立ち上がりと同時か0〜60ms遅れるため、ピークをT0にすると撃発前の窓に反動が入る。
+// そこで、ピーク(tp)の前150ms〜後60msで合成角速度が30dpsを超えた最初のサンプルを「反動の立ち上がり」とし、
+// その直前のサンプルをT0とする（反動が入る直前＝撃発の瞬間に相当）。
+// 検証(30発): 立ち上がりはピークの0〜60ms前。T0をピーク・立ち上がり・立ち上がり-10/-20/-30msで比較し、
+//   立ち上がり-10ms（=直前サンプル）が最良（予測の平均誤差 2.1点、ピークのままでは54.7点）。
+// =========================================================
+const GBB_ONSET_DPS = 30;    // 反動の立ち上がりとみなす合成角速度
+const GBB_RECOIL_DPS = 100;  // 反動とみなす合成角速度（T0後100ms以内の最大）。GBB 30発の最小は205、乾燥撃発で満たすのは0.2%
+function gbbT0(samples, tp) {
+  let prev = null;
+  for (const s of samples) {
+    const rel = s.t - tp;
+    if (rel < -150) { prev = s; continue; }
+    if (rel > 60) break;
+    let gm = s.gm;
+    if (gm == null) { const b = applyGyroBias(s.gx, s.gy, s.gz); gm = Math.sqrt(b.gx * b.gx + b.gy * b.gy + b.gz * b.gz); }
+    if (gm > GBB_ONSET_DPS) return prev ? prev.t : null;
+    prev = s;
+  }
+  return null;
+}
 
 
 // ---- 帯の判定（予測点数→高/中/低） ----
@@ -731,12 +809,12 @@ function bandOf(predicted, p) {
 // ---- 1ショット分の解析（軌跡・予測・方向判定）。samplesは生値、biasを渡して差し引く ----
 function analyzeWindow(samples, t0, bias, gun) {
   gyroBias = bias || { gx: 0, gy: 0, gz: 0 };
-  const gp = gunProfile(gun); predictModel = { intercept: gp.intercept, weights: gp.weights };
+  applyGunProfile(gun);
   const ws = samples.filter(s => s.t >= t0 - PRE_SHOT_MS && s.t <= t0 + EXPORT_POST_MS);
   if (ws.length < 2) return null;
   const traj = buildTrajectory(ws, t0);
   const pred = calcPredictedScore(ws, t0, traj);
-  const quad = checkQuadrantHint(traj);
+  const quad = checkQuadrantHint(traj, quadOptsOf(gun));
   return { traj, predicted: pred ? pred.predicted : null, quad };
 }
 
@@ -746,7 +824,7 @@ function analyzeWindow(samples, t0, bias, gun) {
 class ShotDetector {
   constructor(params, handlers) {
     this.p = params; this.h = handlers || {};
-    this.buf = []; this.bias = { gx: 0, gy: 0, gz: 0 };
+    this.buf = []; this.bias = { gx: 0, gy: 0, gz: 0 }; this.mode = 'dry'; // 'dry'（ドライファイア）| 'gbb'（ガスブローバック）
     this.hardReset();
   }
   hardReset() {
@@ -790,13 +868,17 @@ class ShotDetector {
         if (s.t >= this.cool && s.d >= p.thr) { this.tFirst = s.t; this.emit('PENDING'); }
         break;
       case 'PENDING':
-        if (s.t - this.tFirst >= 300) this.evaluate();
+        if (s.t - this.tFirst >= (this.mode === 'gbb' ? 350 : 300)) { if (this.mode === 'gbb') this.evaluateGbb(); else this.evaluate(); }
         break;
       case 'CONFIRM':
         if (s.t >= this.cand.t0 + CONFIRM_MS) this.confirm();
         break;
       case 'FIRED':
-        if (s.t >= this.fired.t0 + 600) { this.waitStart = s.t; this.emit('WAIT_SLIDE'); }
+        if (s.t >= this.fired.t0 + 600) {
+          // GBBはスライドが自動で戻るため、スライド操作を待たずに静止の確認へ進む
+          if (this.mode === 'gbb') { this.slideStart = s.t; this.quietSince = null; this.emit('SLIDE'); }
+          else { this.waitStart = s.t; this.emit('WAIT_SLIDE'); }
+        }
         break;
       case 'WAIT_SLIDE':
         if (s.gm >= p.slideG || s.d >= p.slideD) { this.slideStart = s.t; this.quietSince = null; this.emit('SLIDE'); }
@@ -830,6 +912,29 @@ class ShotDetector {
     } else {
       this.reject({ t: tp, peak: pk, gmax, width, reason: !gateOk ? '衝撃の瞬間に動きが大きい（ジャイロゲート）' : '衝撃が長い（幅条件）' }, this.tFirst + 150);
     }
+  }
+  // ---- ガスブローバック用の判定 ----
+  // 撃発直後の反動（大きな角速度）は前提なので、ジャイロゲート・衝撃幅・撃発後の静止は使わない。
+  // 反動の立ち上がりの直前をT0とし、反動の大きさと撃発前の静止で判定する。
+  evaluateGbb() {
+    const b = this.buf, p = this.p;
+    const i0 = this.idxFrom(this.tFirst), i1 = this.idxFrom(this.tFirst + 150 + 1e-9);
+    let k = i0; for (let i = i0; i < i1; i++) if (b[i].d > b[k].d) k = i;
+    const pk = b[k].d, tp = b[k].t;
+    const t0 = gbbT0(this.window(tp - 400, tp + 60), tp);
+    const maxGm = (a, z) => { let m = 0; const j1 = this.idxFrom(z + 1e-9); for (let i = this.idxFrom(a); i < j1; i++) if (b[i].gm > m) m = b[i].gm; return m; };
+    if (t0 == null) { this.reject({ t: tp, peak: pk, gmax: maxGm(tp - 100, tp + 60), width: 0, reason: '反動の立ち上がりが見つからない（GBB）' }, this.tFirst + 150); return; }
+    const recoil = maxGm(t0 + 1, t0 + 100);
+    // 撃発前の静止はドライと同じ -1000〜-150ms で見る（-150〜0msは撃発直前のガク引きが入り、低得点の発が要確認になるため）
+    const preMax = maxGm(t0 - 1000, t0 - 150);
+    const info = { t0, peak: pk, gmax: recoil, width: 0, preMax, postMax: recoil };
+    if (recoil < GBB_RECOIL_DPS) { info.reason = '反動が小さい（GBBの撃発ではない可能性）'; this.reject(info, this.tFirst + 150); return; }
+    if (preMax >= p.rejectPre) { info.reason = '撃発の前に大きな動きがある（持ち替え・装填等）'; this.reject(info, this.lastT + 100); return; }
+    info.quality = preMax >= p.suspectPre ? 'suspect' : 'ok';
+    this.fired = info; this.cand = null;
+    this.scoreQueue.push({ t0, quality: info.quality, preMax, postMax: recoil }); this.rawQueue.push(t0);
+    this.emit('FIRED', { t0 });
+    if (this.h.onShot) this.h.onShot(this.fired);
   }
   // 撃発前後の静止を確認する。本物の撃発は前後ともごく静止している（既存328件：前1秒の最大50dps、後の最大37dps）。
   // 持ち替え・スライド操作・構え直しの途中で拾った衝撃は、前後に大きな動きがあるため棄却する。
@@ -1066,6 +1171,7 @@ function makeDetector() {
     onReject: (r) => { lastReject = r; rejectLog.unshift(Object.assign({ wall: Date.now() }, r)); if (rejectLog.length > 8) rejectLog.pop(); renderDiag(); },
   });
   if (savedBias) det.bias = Object.assign({}, savedBias.bias);
+  det.mode = gunProfile(settings.gun).mode || 'dry';
 }
 function onDetState(st, info) {
   const pill = $('statePill');
@@ -1088,6 +1194,7 @@ function onDetShot() {
 
 // ---- 撃発確定 → 採点 → 記録 ----
 function finalizeShot(t0, method = 'auto', meta) {
+  if (method === 'manual' && gunProfile(settings.gun).mode === 'gbb') { gyroBias = det.bias; const adj = gbbT0(det.window(t0 - 400, t0 + 60), t0); if (adj != null) t0 = adj; }
   const ws = det.window(t0 - PRE_SHOT_MS, t0 + SCORE_DELAY_MS);
   const a = analyzeWindow(ws, t0, det.bias, settings.gun);
   if (!a) { $('resCause').textContent = '採点できませんでした（波形データ不足）'; return null; }
@@ -1136,7 +1243,7 @@ function causeKey(shot) {
 // 程度の表示（例: 軽度（0.42°））。「高」帯でも方向が出れば表示し、帯ごとの違いは程度で読む
 function severityText(q, gun) {
   if (!q || q.angle == null) return '';
-  return `${severityOf(q.magnitude, gunProfile(gun).sevScale)}（${q.magnitude.toFixed(2)}°）`;
+  const gp = gunProfile(gun); return `${severityOf(q.magnitude, gp.sev, (gp.quad || {}).min)}（${q.magnitude.toFixed(2)}°）`;
 }
 function causeText(shot) {
   const q = shot.quad; const key = causeKey(shot);
@@ -1261,6 +1368,13 @@ function calibrate() {
   if (!det || det.buf.length < 100) { alert('データが不足しています。BLE接続後、少し待ってから押してください。'); return; }
   const rc = det.buf.slice(-100); const m = rc.reduce((a, s) => { a.gx += s.gx; a.gy += s.gy; a.gz += s.gz; return a; }, { gx: 0, gy: 0, gz: 0 });
   const bias = { gx: m.gx / 100, gy: m.gy / 100, gz: m.gz / 100 };
+  // 静止の確認：持った状態などで記録するとバイアスが数dpsずれ、軌跡が数十度流れる（2026-10-12 GBB検証の序盤11発で発生）
+  const sd = (k) => Math.sqrt(rc.reduce((a, s) => a + (s[k] - bias[k]) ** 2, 0) / rc.length);
+  const maxSd = Math.max(sd('gx'), sd('gy'), sd('gz'));
+  if (maxSd > 1.0 || Math.max(Math.abs(bias.gx), Math.abs(bias.gy), Math.abs(bias.gz)) > 3.0) {
+    alert(`静止していない可能性があるため記録しませんでした（ばらつき ${maxSd.toFixed(2)} dps／平均 X ${bias.gx.toFixed(2)}・Y ${bias.gy.toFixed(2)}・Z ${bias.gz.toFixed(2)} dps）。\n机などに置いて動かさない状態で、もう一度押してください。`);
+    return;
+  }
   det.bias = bias; if (session) session.bias = Object.assign({}, bias);
   savedBias = { bias, at: Date.now() }; lsSet('maco_train_bias', JSON.stringify(savedBias));
   renderCalib(); updateBanner();
@@ -1393,7 +1507,7 @@ function paintDetail() {
   $('dtCause').textContent = (shot.quality === 'suspect' ? '要確認：' : '') + causeText(shot);
   $('dtMeta').textContent = metaText(shot) + (shot.quality === 'suspect' ? '\n' + SUSPECT_NOTE : '') + (shot.preMax != null ? `\n撃発前1秒の最大 ${shot.preMax.toFixed(0)}dps ／ 撃発後の最大 ${shot.postMax.toFixed(0)}dps` : '');
   $('dtHero').className = 'hero b-' + shot.band + (shot.quality === 'suspect' ? ' suspect' : '');
-  const gk = guideKeyOf(shot); $('dtGuide').innerHTML = gk ? guideHtml(gk, shot.quad && shot.quad.angle != null ? severityOf(shot.quad.magnitude, gunProfile(shot.gun).sevScale) : null) : '';
+  const gk = guideKeyOf(shot); $('dtGuide').innerHTML = gk ? guideHtml(gk, shot.quad && shot.quad.angle != null ? severityOf(shot.quad.magnitude, gunProfile(shot.gun).sev, (gunProfile(shot.gun).quad || {}).min) : null) : '';
   if (traj) drawTraj(traj, { live: false }, $('dtTraj')); else $('dtTraj').innerHTML = '<text x="160" y="160" fill="#8a8f98" font-size="12" text-anchor="middle">生波形が保存されていません</text>';
 }
 function saveDetail() { const s = detail.shot; DB.put('shots', Object.assign({}, s)); if (session && s.sessionId === session.id) { renderStrip(); } renderReview(); }
@@ -1512,7 +1626,7 @@ const SET_SPEC = {
     ['autoRearmS', '自動再待機（秒、0で無効）', 'スライド操作が検出されないとき、この時間で待機に戻る', 0, 60, 1],
   ],
   setBand: [
-    ['gun', '銃種', '採点モデルと程度の区分を切り替える', 'select', { vp9: 'VP9', glock17: 'Glock17' }],
+    ['gun', '銃種', '採点モデルと程度の区分を切り替える', 'select', { vp9: 'VP9', glock17: 'Glock17', glock17_gbb: 'Glock17 ガスブローバック' }],
     ['bandLow', '「低」の上限（予測点）', 'これ未満を「低」。実測70点未満に対応', 50, 90, 1],
     ['bandHigh', '「高」の下限（予測点）', 'これ以上を「高」。実測90点以上に対応', 70, 100, 1],
     ['trajScale', '軌跡の倍率（deg）', '小さいほど拡大表示', 1, 15, 0.5],
@@ -1535,7 +1649,7 @@ function renderSettings() {
   });
   document.querySelectorAll('[data-k]').forEach(el => el.onchange = () => {
     const k = el.dataset.k; settings[k] = el.type === 'checkbox' ? el.checked : el.tagName === 'SELECT' ? el.value : (isNaN(parseFloat(el.value)) ? DEFAULTS[k] : parseFloat(el.value));
-    if (k === 'gun') { if (session) session.gun = settings.gun; renderGun(); }
+    if (k === 'gun') { if (session) session.gun = settings.gun; if (det) det.mode = gunProfile(settings.gun).mode || 'dry'; renderGun(); }
     saveSettings(); if (det) det.p = settings;
     if (k === 'beep' && settings.beep) { try { if (!audioCtx && window.AudioContext) audioCtx = new AudioContext(); if (audioCtx) audioCtx.resume(); } catch (e) {} beep('中'); }
     if (k === 'rawRecord' && !settings.rawRecord) flushRaw();
@@ -1565,7 +1679,7 @@ $('btnNewSession').onclick = async () => {
   await flushRaw(); newSession(); reviewSessionId = session.id; showIdle(); renderStrip();
 };
 $('btnCalib').onclick = calibrate;
-$('btnResetSettings').onclick = () => { if (!confirm('設定を初期値に戻します。')) return; settings = Object.assign({}, DEFAULTS); saveSettings(); det.p = settings; if (session) session.gun = settings.gun; renderSettings(); renderGun(); };
+$('btnResetSettings').onclick = () => { if (!confirm('設定を初期値に戻します。')) return; settings = Object.assign({}, DEFAULTS); saveSettings(); det.p = settings; det.mode = 'dry'; if (session) session.gun = settings.gun; renderSettings(); renderGun(); };
 $('selSession').onchange = (e) => { reviewSessionId = Number(e.target.value); renderReview(); };
 $('btnExportCsv').onclick = exportCsv; $('btnExportRaw').onclick = exportRaw;
 $('exShare').onclick = doShare; $('exCopy').onclick = doCopy; $('exDl').onclick = doDownload;
