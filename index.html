@@ -115,6 +115,10 @@
   .scen-run .h { font-weight: 700; font-size: 13px; } .scen-run .s { color: var(--sub); margin-top: 2px; }
   .scen-run table { width: 100%; border-collapse: collapse; margin-top: 4px; font-variant-numeric: tabular-nums; }
   .scen-run td { padding: 3px 4px; border-bottom: 1px solid var(--border); }
+  .cust { background: var(--panel2); border-radius: 10px; padding: 4px 10px 8px; margin-bottom: 8px; }
+  .cust .set-row { padding: 6px 0; }
+  .cust input[type=text] { flex: 1; min-width: 0; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px; font-size: 14px; }
+  .cust .cust-del { width: 100%; margin-top: 6px; padding: 8px; font-size: 13px; }
 
   .traj-wrap { width: 100%; aspect-ratio: 1 / 1; max-width: 340px; margin: 0 auto; }
   .traj-wrap svg { width: 100%; height: 100%; display: block; }
@@ -192,7 +196,7 @@
   <section class="view active" id="viewTrain">
     <div class="first-screen">
       <div class="scen-bar" id="scenBar">
-        <select id="scenSel"><option value="free">1 自由練成</option><option value="t1">2 1コ的 3秒×4</option><option value="t3">3 3コ的 2秒×3</option></select>
+        <select id="scenSel"></select>
         <button id="btnScen" class="primary">開始</button>
         <div class="scen-status" id="scenStatus"></div>
       </div>
@@ -253,6 +257,9 @@
     <div class="panel"><h2>練成モード・傾き（カント）</h2><div id="setScen"></div>
       <button id="btnCantZero" style="width:100%;margin-top:8px;">傾きの0点を記録し直す（照準を正立させて構えた状態で押す）</button>
       <p class="hint" id="cantStatus"></p></div>
+    <div class="panel"><h2>カスタム練成</h2><div id="customList"></div>
+      <button id="btnAddCustom" style="width:100%;margin-top:8px;">カスタム練成を追加</button>
+      <p class="hint">1回＝開始ブザー → 射撃時間内に1発 → 終了ブザー → スライド操作時間（休止）。錬成画面上部の選択肢に「4」以降として表示されます。「設定を初期値に戻す」では消えません。</p></div>
     <div class="panel"><h2>記録・通知</h2><div id="setMisc"></div></div>
     <div class="panel"><h2>検知の診断</h2><div class="hint" id="diagText" style="font-size:12px;"></div></div>
     <button id="btnResetSettings" style="width:100%;">設定を初期値に戻す</button>
@@ -1310,7 +1317,7 @@ function finalizeShot(t0, method = 'auto', meta) {
       if (rejectLog.length > 8) rejectLog.pop(); renderDiag(); return null;
     }
     if (as) {
-      sc = { run: scenRun.run, key: scenRun.key, rep: as.rep, target: as.target, react: Math.round(as.react), late: as.late };
+      sc = { run: scenRun.run, key: scenRun.key, rep: as.rep, target: as.target, react: Math.round(as.react), late: as.late, cfg: scenSnap(scenRun.sc) };
       if (shots.some(s => !s.deleted && s.sc && s.sc.run === sc.run && s.sc.rep === sc.rep)) sc.extra = true; // 同じ回の2発目
     }
   }
@@ -1377,7 +1384,7 @@ function cantText(c) {
   const a = Math.abs(c); return `傾き ${a < 0.05 ? '' : c > 0 ? '右' : '左'}${a.toFixed(1)}°` + (a >= settings.cantWarn ? '⚠' : '');
 }
 function scenLine(shot) {
-  const s = shot.sc, sc = SCENARIOS[s.key]; if (!sc) return '';
+  const s = shot.sc, sc = scenCfg(s); if (!sc) return '';
   return `${sc.short} 第${s.rep}発${sc.targets > 1 ? '（的' + s.target + '）' : ''} ／ ブザーから ${(s.react / 1000).toFixed(2)}秒` + (s.late ? '（時間外）' : '') + (s.extra ? '（同じ回の2発目）' : '');
 }
 const SUSPECT_NOTE = '⚠ 要確認：撃発前後の動きが通常より大きく、誤検知（持ち替え等）の可能性があります。';
@@ -1473,11 +1480,67 @@ function scheduleTone(ctxT, freq, dur, list) {
   g.gain.setValueAtTime(0.35, ctxT + dur - 0.02); g.gain.exponentialRampToValueAtTime(0.0001, ctxT + dur);
   o.connect(g); g.connect(audioCtx.destination); o.start(ctxT); o.stop(ctxT + dur + 0.02); list.push(o);
 }
+// ---- カスタム練成（設定で追加・編集。端末に保存し「設定を初期値に戻す」では消さない）----
+const CUSTOM_FIELDS = [ // [キー, 表示名, 単位, 最小, 最大, 刻み, 既定値]
+  ['parS', '射撃時間', '秒', 0.5, 60, 0.1, 3],
+  ['restS', 'スライド操作時間', '秒', 0, 60, 0.5, 5],
+  ['reps', '試行回数', '回', 1, 50, 1, 5],
+  ['targets', '的数', '個', 1, 10, 1, 1],
+  ['leadS', '開始までの秒数', '秒', 1, 30, 1, 3],
+];
+let customScens = [];
+try { const a = JSON.parse(lsGet('maco_train_custom') || '[]'); if (Array.isArray(a)) customScens = a.filter(c => c && c.id && c.name); } catch (e) {}
+function saveCustom() { lsSet('maco_train_custom', JSON.stringify(customScens)); }
+function clampField(f, v) { const [, , , lo, hi, step, def] = f; let x = parseFloat(v); if (isNaN(x)) x = def; x = Math.min(hi, Math.max(lo, x)); return step >= 1 ? Math.round(x) : +(Math.round(x / step) * step).toFixed(2); }
+// 練成の設定（固定の1コ的・3コ的、またはカスタム）を共通の形にする
+function customScenario(c) {
+  return { label: `${c.name}（${+c.parS.toFixed(1)}秒×${c.reps}発）`, short: c.name, reps: c.reps, parMs: Math.round(c.parS * 1000), restMs: Math.round(c.restS * 1000), targets: c.targets, leadS: c.leadS, custom: true };
+}
+function scenarioOf(key) {
+  if (SCENARIOS[key]) return Object.assign({ leadS: settings.scenLeadS }, SCENARIOS[key]);
+  const c = customScens.find(x => x.id === key); return c ? customScenario(c) : null;
+}
+// 記録済みの発・練成の表示用（記録時の設定を保存しているので、カスタムを編集・削除しても当時の内容で表示する）
+function scenCfg(sc) { return (sc && (sc.cfg || SCENARIOS[sc.key])) || null; }
+function renderScenSelect() {
+  const sel = $('scenSel'); if (!sel) return;
+  if (settings.scen !== 'free' && !scenarioOf(settings.scen)) { settings.scen = 'free'; saveSettings(); }
+  sel.innerHTML = `<option value="free">1 自由練成</option><option value="t1">2 1コ的 3秒×4</option><option value="t3">3 3コ的 2秒×3</option>` +
+    customScens.map((c, i) => `<option value="${escHtml(c.id)}">${i + 4} ${escHtml(c.name)} ${+c.parS.toFixed(1)}秒×${c.reps}</option>`).join('');
+  sel.value = settings.scen;
+}
+function renderCustomList() {
+  const box = $('customList'); if (!box) return;
+  box.innerHTML = customScens.length ? customScens.map((c, i) => `<div class="cust" data-id="${escHtml(c.id)}">
+      <div class="set-row"><div class="sl">${i + 4}　名称</div><input type="text" maxlength="16" data-cf="name" value="${escHtml(c.name)}"></div>` +
+    CUSTOM_FIELDS.map(f => `<div class="set-row"><div class="sl">${f[1]}（${f[2]}）</div><input type="number" data-cf="${f[0]}" min="${f[3]}" max="${f[4]}" step="${f[5]}" value="${c[f[0]]}"></div>`).join('') +
+    `<div class="hint" style="margin:4px 0 0">1回 ${(c.parS + c.restS).toFixed(1)}秒・全体 約${Math.round(c.leadS + c.reps * c.parS + (c.reps - 1) * c.restS)}秒</div>
+      <button class="cust-del danger">削除</button></div>`).join('') : '<p class="hint" style="margin:0">登録はありません。</p>';
+  box.querySelectorAll('.cust').forEach(el => {
+    const c = customScens.find(x => x.id === el.dataset.id);
+    el.querySelectorAll('[data-cf]').forEach(inp => inp.onchange = () => {
+      const k = inp.dataset.cf;
+      if (k === 'name') { const v = inp.value.trim(); if (v) c.name = v; }
+      else c[k] = clampField(CUSTOM_FIELDS.find(f => f[0] === k), inp.value);
+      saveCustom(); renderCustomList(); renderScenSelect(); renderScenBar();
+    });
+    el.querySelector('.cust-del').onclick = () => {
+      if (!confirm(`「${c.name}」を削除します（記録済みの結果は残ります）。`)) return;
+      customScens = customScens.filter(x => x !== c); saveCustom(); renderCustomList(); renderScenSelect(); renderScenBar();
+    };
+  });
+}
+function addCustom() {
+  const c = { id: 'c' + Date.now(), name: 'カスタム' + (customScens.length + 1) };
+  CUSTOM_FIELDS.forEach(f => c[f[0]] = f[6]);
+  customScens.push(c); saveCustom(); renderCustomList(); renderScenSelect();
+}
+
 function startScenario() {
-  const sc = SCENARIOS[settings.scen]; if (!sc) return;
+  const sc = scenarioOf(settings.scen); if (!sc) return;
   if (!connected || clockOff == null) { alert('BLE接続後に開始してください。'); return; }
   ensureAudio();
-  const lead = Math.max(1, settings.scenLeadS) * 1000, tl = scenarioTimeline(sc, lead), osc = [];
+  const lead = Math.max(1, sc.leadS) * 1000, tl = scenarioTimeline(sc, lead), osc = [];
   let perf0 = performance.now();
   if (audioCtx) {
     // 音の時計（AudioContext）でブザーを予約する（画面の処理が混んでも時刻がずれない）。
@@ -1508,7 +1571,7 @@ function finishScenario(aborted) {
   scenRun = null;
   const now = performance.now() - r.perf0;
   const tl = aborted ? r.tl.filter(x => x.start <= now) : r.tl;
-  session.runs = session.runs || []; session.runs.push({ run: r.run, key: r.key, reps: tl.length, aborted: !!aborted });
+  session.runs = session.runs || []; session.runs.push({ run: r.run, key: r.key, reps: tl.length, aborted: !!aborted, cfg: scenSnap(r.sc) });
   persistSession();
   const list = shots.filter(s => !s.deleted && s.sc && s.sc.run === r.run && !s.sc.extra);
   const st = scenStats(list, tl.length);
@@ -1521,6 +1584,7 @@ function finishScenario(aborted) {
     (s ? `${(s.sc.react / 1000).toFixed(2)}秒 ${Math.round(s.predicted)}点 ${cantText(s.cant).replace('傾き ', '')}${s.sc.late ? ' 時間外' : ''}${s.quality === 'suspect' ? ' 要確認' : ''}` : '未射撃'); }).join('\n');
   renderScenBar();
 }
+function scenSnap(sc) { return { label: sc.label, short: sc.short, reps: sc.reps, parMs: sc.parMs, restMs: sc.restMs, targets: sc.targets }; }
 // 練成1回分の集計。点数の平均は時間内かつ要確認でない発、反応時間は時間内の発
 function scenStats(list, reps) {
   const inT = list.filter(s => !s.sc.late), ok = inT.filter(s => s.quality !== 'suspect' && s.predicted != null);
@@ -1719,7 +1783,7 @@ async function renderReview() {
   // 多かった要因の順に説明と対処を表示（最も多い要因のみ最初から開く）
   $('causeGuides').innerHTML = entries.map(([k, n], i) => `<details class="g-item"${i === 0 ? ' open' : ''}><summary>${CAUSE_GUIDE[k].title}<span class="n">${n}発</span></summary>${guideHtml(k, null)}</details>`).join('');
   $('shotList').innerHTML = list.slice().reverse().map(s => `<tr class="row-shot" data-key="${s.key}" style="${s.deleted ? 'opacity:.35;text-decoration:line-through;' : ''}">
-    <td>${s.no}</td><td>${new Date(s.wall).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}${s.sc && SCENARIOS[s.sc.key] ? `<div style="font-size:10px;color:var(--sub)">${SCENARIOS[s.sc.key].short} ${s.sc.rep}発 ${(s.sc.react / 1000).toFixed(2)}秒${s.sc.late ? '<span class="tag-late">時間外</span>' : ''}</div>` : ''}</td>
+    <td>${s.no}</td><td>${new Date(s.wall).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}${s.sc && scenCfg(s.sc) ? `<div style="font-size:10px;color:var(--sub)">${escHtml(scenCfg(s.sc).short)} ${s.sc.rep}発 ${(s.sc.react / 1000).toFixed(2)}秒${s.sc.late ? '<span class="tag-late">時間外</span>' : ''}</div>` : ''}</td>
     <td style="font-variant-numeric:tabular-nums;">${s.predicted == null ? '--' : Math.round(s.predicted)}${s.mantis != null ? `<div style="font-size:10px;color:var(--sub)">参照${s.mantis}</div>` : ''}</td>
     <td><span class="chip b-${s.band}">${s.band || '–'}</span>${s.quality === 'suspect' ? '<span class="tag-sus">要確認</span>' : ''}</td><td style="font-size:12px;">${causeText(s).replace('の可能性', '')}</td></tr>`).join('');
   document.querySelectorAll('#shotList tr.row-shot').forEach(tr => tr.onclick = () => openDetail(list.find(s => s.key === tr.dataset.key)));
@@ -1733,10 +1797,10 @@ function renderScenSummary(live, runs) {
   el.style.display = '';
   el.innerHTML = '<h2>練成モードの結果</h2>' + ids.map(id => {
     const meta = runs.find(r => r.run === id), ss = live.filter(s => s.sc && s.sc.run === id && !s.sc.extra);
-    const key = meta ? meta.key : ss[0].sc.key, sc = SCENARIOS[key]; if (!sc) return '';
+    const sc = (meta && meta.cfg) || scenCfg(ss.length ? ss[0].sc : { key: meta.key }); if (!sc) return '';
     const reps = meta ? meta.reps : sc.reps, st = scenStats(ss, reps);
     const tl = scenarioTimeline(sc, 0).slice(0, reps);
-    return `<div class="scen-run"><div class="h">${new Date(id).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}　${sc.label}${meta && meta.aborted ? '（中止）' : ''}</div>
+    return `<div class="scen-run"><div class="h">${new Date(id).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}　${escHtml(sc.label)}${meta && meta.aborted ? '（中止）' : ''}</div>
       <div class="s">時間内 ${st.inTime}/${reps}発` + (st.mean != null ? ` ／ 平均 ${Math.round(st.mean)}点` : '') +
       (st.reactMean != null ? ` ／ 反応 平均${(st.reactMean / 1000).toFixed(2)}秒・最遅${(st.reactMax / 1000).toFixed(2)}秒` : '') +
       (st.cantMax != null ? ` ／ 最大の${cantText(st.cantMax)}` : '') + `</div>
@@ -1859,7 +1923,7 @@ async function exportCsv() {
         `"${j(samples, p => p.ax, 3)}"`, `"${j(samples, p => p.ay, 3)}"`, `"${j(samples, p => p.az, 3)}"`, bandOf(a.predicted, settings) || '',
         causeText(Object.assign({}, s, { band: bandOf(a.predicted, settings), quad: q })), s.quality === 'suspect' ? '要確認' : '通常',
         s.preMax != null ? s.preMax.toFixed(0) : '', s.postMax != null ? s.postMax.toFixed(0) : '', gunProfile(s.gun).label,
-        s.cant != null ? s.cant.toFixed(2) : '', s.sc && SCENARIOS[s.sc.key] ? SCENARIOS[s.sc.key].short : '', s.sc ? s.sc.rep : '', s.sc ? s.sc.target : '', s.sc ? s.sc.react : '', s.sc ? (s.sc.late ? '時間外' : '時間内') : ''].join(','));
+        s.cant != null ? s.cant.toFixed(2) : '', s.sc && scenCfg(s.sc) ? scenCfg(s.sc).short.replace(/[,"]/g, ' ') : '', s.sc ? s.sc.rep : '', s.sc ? s.sc.target : '', s.sc ? s.sc.react : '', s.sc ? (s.sc.late ? '時間外' : '時間内') : ''].join(','));
     }
     if (!rows.length) { alert('生波形が見つからず、CSVを作れませんでした。\n保存状況：ショット' + all.length + '件、生波形あり0件。\n「設定」で連続生データを保存しておくと、生波形から再構築できます。'); return; }
     const bias = `# 静止バイアス(dps): GyroX=${b0.gx.toFixed(3)}, GyroY=${b0.gy.toFixed(3)}, GyroZ=${b0.gz.toFixed(3)}\n`;
@@ -1969,6 +2033,7 @@ $('btnNewSession').onclick = async () => {
 $('btnCalib').onclick = calibrate;
 $('btnCantZero').onclick = recordCantZero;
 $('scenSel').onchange = () => { settings.scen = $('scenSel').value; saveSettings(); renderScenBar(); };
+$('btnAddCustom').onclick = addCustom;
 $('btnScen').onclick = () => { if (scenRun) finishScenario(true); else startScenario(); };
 $('btnResetSettings').onclick = () => { if (!confirm('設定を初期値に戻します。')) return; settings = Object.assign({}, DEFAULTS); saveSettings(); det.p = settings; det.mode = 'dry'; if (session) session.gun = settings.gun; renderSettings(); renderGun(); };
 $('selSession').onchange = (e) => { reviewSessionId = Number(e.target.value); renderReview(); };
@@ -1997,7 +2062,7 @@ function showIdle() {
   await DB.open();
   makeDetector(); newSession(); reviewSessionId = session.id;
   onDetState('ARMED', {}); showIdle(); renderStrip(); renderCalib(); updateBanner(); renderSettings(); renderGun();
-  $('scenSel').value = SCENARIOS[settings.scen] ? settings.scen : 'free'; renderScenBar();
+  renderScenSelect(); renderCustomList(); renderScenBar();
   if (!('bluetooth' in navigator)) $('btnConnect').title = 'Web Bluetooth対応ブラウザ（Bluefy等）で開いてください';
 })();
 </script>
