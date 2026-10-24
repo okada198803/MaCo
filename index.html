@@ -244,14 +244,14 @@
   <section class="view" id="viewSettings">
     <div class="panel">
       <h2>静止バイアス</h2>
-      <button id="btnCalib" style="width:100%;" class="primary">静止バイアスを記録（銃に装着する前、置いた状態で押す）</button>
+      <button id="btnCalib" style="width:100%;" class="primary">静止バイアスと傾きの0点を記録（銃に装着する前、置いた状態で押す）</button>
       <p class="hint" id="calibStatus"></p>
     </div>
     <div class="panel"><h2>撃発の検知</h2><div id="setDetect"></div></div>
     <div class="panel"><h2>スライド操作の判定・再待機</h2><div id="setSlide"></div></div>
     <div class="panel"><h2>採点の帯・表示</h2><div id="setBand"></div></div>
     <div class="panel"><h2>練成モード・傾き（カント）</h2><div id="setScen"></div>
-      <button id="btnCantZero" style="width:100%;margin-top:8px;">傾きの0点を記録（照準を正立させて構えた状態で押す）</button>
+      <button id="btnCantZero" style="width:100%;margin-top:8px;">傾きの0点を記録し直す（照準を正立させて構えた状態で押す）</button>
       <p class="hint" id="cantStatus"></p></div>
     <div class="panel"><h2>記録・通知</h2><div id="setMisc"></div></div>
     <div class="panel"><h2>検知の診断</h2><div class="hint" id="diagText" style="font-size:12px;"></div></div>
@@ -1046,11 +1046,16 @@ function scenarioAssign(timeline, t, lateMs) {
 // ---- 傾き（カント）----
 // 加速度（重力方向）から銃身軸まわりの傾きを求める。M5の軸は X=銃身軸（後方向き）・Y=左・Z=下（据銃時 az≈-1G）。
 // 右へ傾ける（銃の上部が右へ倒れる）と ay が正になるため、右傾きを正とする。撃発直前（-300〜-50ms）の平均を使う。
+// 重力方向(ay, az)から傾き(deg)。画面の向き（Z軸が下向き・上向き）のどちらで取り付けても、正立で0°付近になるようにする。
+// 上下逆（銃身軸まわりに180°）に取り付けた場合はY・Zとも符号が反転するため、Yの符号も反転して右傾きを正に保つ。
+function rawCant(ay, az) {
+  return (az <= 0 ? Math.atan2(ay, -az) : Math.atan2(-ay, az)) * 180 / Math.PI;
+}
 function cantOf(samples, t0, zero) {
   let sy = 0, sz = 0, n = 0;
   for (const s of samples) { const r = s.t - t0; if (r >= -300 && r <= -50 && s.ay != null) { sy += s.ay; sz += s.az; n++; } }
   if (!n) return null;
-  const c = Math.atan2(sy / n, -sz / n) * 180 / Math.PI - (zero || 0);
+  const c = rawCant(sy / n, sz / n) - (zero || 0);
   return ((c + 180) % 360 + 360) % 360 - 180; // -180〜180に正規化（M5を上下逆に取り付けた場合も0点の記録で対応できる）
 }
 // ==CORE_END==
@@ -1558,7 +1563,7 @@ function recordCantZero() {
   setTimeout(() => {
     const lt = det.lastT, rc = det.window(lt - 1000, lt);
     if (rc.length < 50 || Math.max(...rc.map(s => s.gm)) > 20) { $('cantStatus').textContent = '動いているため記録しませんでした。もう一度押してください。'; return; }
-    let sy = 0, sz = 0; rc.forEach(s => { sy += s.ay; sz += s.az; }); settings.cantZero = +(Math.atan2(sy / rc.length, -sz / rc.length) * 180 / Math.PI).toFixed(2);
+    let sy = 0, sz = 0; rc.forEach(s => { sy += s.ay; sz += s.az; }); settings.cantZero = +rawCant(sy / rc.length, sz / rc.length).toFixed(2);
     lsSet('maco_train_cantzero_at', String(Date.now())); saveSettings(); renderCantStatus();
   }, 3000);
 }
@@ -1621,6 +1626,9 @@ function calibrate() {
     return;
   }
   det.bias = bias; if (session) session.bias = Object.assign({}, bias);
+  // 傾きの0点も同じ静止状態で記録する（置いた向きで0°。装着後に構えて合わせ直す場合は「傾きの0点を記録」）
+  { let sy = 0, sz = 0; rc.forEach(s => { sy += s.ay; sz += s.az; });
+    if (rc[0].ay != null) { settings.cantZero = +rawCant(sy / rc.length, sz / rc.length).toFixed(2); lsSet('maco_train_cantzero_at', String(Date.now())); saveSettings(); renderCantStatus(); } }
   savedBias = { bias, at: Date.now() }; lsSet('maco_train_bias', JSON.stringify(savedBias));
   renderCalib(); updateBanner();
 }
