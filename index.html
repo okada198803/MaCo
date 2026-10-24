@@ -115,6 +115,14 @@
   .scen-run .h { font-weight: 700; font-size: 13px; } .scen-run .s { color: var(--sub); margin-top: 2px; }
   .scen-run table { width: 100%; border-collapse: collapse; margin-top: 4px; font-variant-numeric: tabular-nums; }
   .scen-run td { padding: 3px 4px; border-bottom: 1px solid var(--border); }
+  .ana-filters { display: flex; gap: 6px; margin-bottom: 8px; }
+  .ana-filters select { flex: 1; min-width: 0; background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px; font-size: 13px; }
+  .ana-h { font-size: 12px; color: var(--sub); margin: 10px 0 2px; font-weight: 600; }
+  .ana-cap { font-size: 11.5px; color: var(--text); min-height: 16px; margin: 2px 0 0; font-variant-numeric: tabular-nums; }
+  table.ana { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+  table.ana th { color: var(--sub); font-weight: 500; font-size: 11px; text-align: right; padding: 4px; border-bottom: 1px solid var(--border); }
+  table.ana td { text-align: right; padding: 5px 4px; border-bottom: 1px solid var(--border); }
+  table.ana th:first-child, table.ana td:first-child { text-align: left; }
   .cust { background: var(--panel2); border-radius: 10px; padding: 4px 10px 8px; margin-bottom: 8px; }
   .cust .set-row { padding: 6px 0; }
   .cust input[type=text] { flex: 1; min-width: 0; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px; font-size: 14px; }
@@ -231,6 +239,7 @@
     </div>
     <div class="panel" id="reviewSummary"></div>
     <div class="panel" id="scenSummary" style="display:none;"></div>
+    <div class="panel" id="scenAnalysis" style="display:none;"></div>
     <div class="panel"><h2>点数の推移</h2><div class="chart-box"><svg id="trendSvg" viewBox="0 0 320 150"></svg></div>
       <p class="hint" id="trendHint"></p></div>
     <div class="panel"><h2>判定された低下要因（中・低のショット、件数）</h2><div id="causeHist"></div>
@@ -246,6 +255,11 @@
 
   <!-- 設定 -->
   <section class="view" id="viewSettings">
+    <div class="panel">
+      <h2>練成者</h2>
+      <input type="text" class="full" id="shooterInput" maxlength="16" placeholder="氏名・記号（例：岡田）">
+      <p class="hint">以降に記録するショットに付けます。振り返りの「練成の分析」で練成者ごとに絞り込めます。</p>
+    </div>
     <div class="panel">
       <h2>静止バイアス</h2>
       <button id="btnCalib" style="width:100%;" class="primary">静止バイアスと傾きの0点を記録（銃に装着する前、置いた状態で押す）</button>
@@ -345,6 +359,7 @@ const DEFAULTS = {
   liveTraj: true,   // 待機中に照準の軌跡をリアルタイム表示
   beep: false,      // 採点結果を音で通知
   rawRecord: false, // 連続生データを保存（検知ルールの検証用）
+  shooter: '',      // 練成者（記録・振り返りの絞り込みに使う）
   scen: 'free',     // 練成モード（free=通常、t1=1コ的、t3=3コ的）
   scenLeadS: 3,     // 練成の開始ボタンから第1ブザーまでの秒数
   scenLateMs: 1000, // 終了ブザー後、この時間内の撃発は「時間外」として記録（以降はスライド操作の時間とみなし記録しない）
@@ -1264,12 +1279,12 @@ const STATE_LABEL = { ARMED: '待機中', PENDING: '判定中', CONFIRM: '判定
 const METHOD_LABEL = { auto: '自動検知(錬成)', manual: '手動追加(錬成)' };
 
 function newSession() {
-  session = { id: Date.now(), start: Date.now(), count: 0, gun: settings.gun, bias: Object.assign({}, det ? det.bias : (savedBias ? savedBias.bias : { gx: 0, gy: 0, gz: 0 })), persisted: false, runs: [] };
+  session = { id: Date.now(), start: Date.now(), count: 0, gun: settings.gun, bias: Object.assign({}, det ? det.bias : (savedBias ? savedBias.bias : { gx: 0, gy: 0, gz: 0 })), persisted: false, runs: [], shooter: settings.shooter || '' };
   shots = []; rawBuf = []; rawChunkIdx = 0; lastShotShown = null;
 }
 async function persistSession() {
   session.persisted = true;
-  await DB.put('sessions', { id: session.id, start: session.start, count: session.count, gun: session.gun, bias: session.bias, rawChunks: rawChunkIdx, runs: session.runs || [] });
+  await DB.put('sessions', { id: session.id, start: session.start, count: session.count, gun: session.gun, bias: session.bias, rawChunks: rawChunkIdx, runs: session.runs || [], shooter: session.shooter || '' });
 }
 
 // ---- 検知器の生成 ----
@@ -1326,7 +1341,7 @@ function finalizeShot(t0, method = 'auto', meta) {
     key: session.id + ':' + session.count, sessionId: session.id, no: session.count, wall: Date.now(), method,
     t0Abs: t0, t0Rel: 0, predicted: a.predicted, band, quad: a.quad,
     quality: (meta && meta.quality) || 'ok', preMax: meta && meta.preMax != null ? meta.preMax : null, postMax: meta && meta.postMax != null ? meta.postMax : null, mantis: null, cause: '', causeFree: '', deleted: false,
-    bias: Object.assign({}, det.bias), rawReady: false, gun: settings.gun,
+    bias: Object.assign({}, det.bias), rawReady: false, gun: settings.gun, shooter: settings.shooter || '',
     cant: cantOf(ws, t0, settings.cantZero), sc,
   };
   shots.push(shot);
@@ -1537,6 +1552,7 @@ function addCustom() {
 }
 
 function startScenario() {
+  if (scenRun) return; // 実施中は二重に開始しない
   const sc = scenarioOf(settings.scen); if (!sc) return;
   if (!connected || clockOff == null) { alert('BLE接続後に開始してください。'); return; }
   ensureAudio();
@@ -1674,7 +1690,7 @@ async function flushRaw() {
   rawBuf = []; const idx = rawChunkIdx++;
   if (!session.persisted) await persistSession();
   await DB.put('chunks', { key: session.id + ':' + idx, sessionId: session.id, idx, t, v });
-  await DB.put('sessions', { id: session.id, start: session.start, count: session.count, gun: session.gun, bias: session.bias, rawChunks: rawChunkIdx, runs: session.runs || [] });
+  await DB.put('sessions', { id: session.id, start: session.start, count: session.count, gun: session.gun, bias: session.bias, rawChunks: rawChunkIdx, runs: session.runs || [], shooter: session.shooter || '' });
 }
 
 // ---- 静止バイアス ----
@@ -1751,13 +1767,13 @@ function nudge(dt) { if (!pk) return; pk.sel = Math.max(pk.lo, Math.min(pk.hi, p
 // ---- 振り返り ----
 async function loadSessions() {
   const list = (await DB.getAll('sessions')) || [];
-  if (session && !list.find(s => s.id === session.id)) list.push({ id: session.id, start: session.start, count: session.count, gun: session.gun });
+  if (session && !list.find(s => s.id === session.id)) list.push({ id: session.id, start: session.start, count: session.count, gun: session.gun, shooter: session.shooter, runs: session.runs });
   list.sort((a, b) => b.start - a.start); return list;
 }
 async function renderReview() {
   const sessions = await loadSessions(); const sel = $('selSession');
   if (reviewSessionId == null && session) reviewSessionId = session.id;
-  sel.innerHTML = sessions.map(s => `<option value="${s.id}" ${s.id === reviewSessionId ? 'selected' : ''}>${new Date(s.start).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}（${s.count}発・${gunProfile(s.gun).label}）${session && s.id === session.id ? ' ・実施中' : ''}</option>`).join('') || '<option>記録なし</option>';
+  sel.innerHTML = sessions.map(s => `<option value="${s.id}" ${s.id === reviewSessionId ? 'selected' : ''}>${new Date(s.start).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}（${s.shooter ? escHtml(s.shooter) + '・' : ''}${s.count}発・${gunProfile(s.gun).label}）${session && s.id === session.id ? ' ・実施中' : ''}</option>`).join('') || '<option>記録なし</option>';
   let list = (session && reviewSessionId === session.id) ? shots : ((await DB.byIndex('shots', 'sessionId', reviewSessionId)) || []);
   list = list.slice().sort((a, b) => a.no - b.no); const live = list.filter(s => !s.deleted);
   const sm = summarize(live.filter(s => s.quality !== 'suspect')); const nsus = live.filter(s => s.quality === 'suspect').length;
@@ -1776,6 +1792,7 @@ async function renderReview() {
     $('reviewSummary').innerHTML += `<p class="hint">傾き（カント）：平均 ${cantText(m).replace('傾き ', '')}・最大 ${cantText(mx).replace('傾き ', '')}（${settings.cantWarn}°以上 ${cants.filter(c => Math.abs(c) >= settings.cantWarn).length}発）</p>`; }
   const rec = sessions.find(s => s.id === reviewSessionId);
   renderScenSummary(live, (session && reviewSessionId === session.id) ? session.runs : (rec && rec.runs));
+  renderScenAnalysis(sessions);
   renderTrend(live);
   const cnt = {}; live.filter(s => s.band !== '高' && s.quality !== 'suspect').forEach(s => { const k = guideKeyOf(s); if (k) cnt[k] = (cnt[k] || 0) + 1; });
   const entries = Object.entries(cnt).sort((a, b) => b[1] - a[1]); const mx = entries.length ? entries[0][1] : 1;
@@ -1808,6 +1825,109 @@ function renderScenSummary(live, runs) {
         return `<tr><td>${x.rep}${sc.targets > 1 ? '・的' + x.target : ''}</td>` + (s ? `<td>${(s.sc.react / 1000).toFixed(2)}秒</td><td><span class="chip b-${s.band}">${Math.round(s.predicted)}</span></td><td>${cantText(s.cant).replace('傾き ', '')}</td><td>${s.sc.late ? '<span class="tag-late">時間外</span>' : ''}${s.quality === 'suspect' ? '<span class="tag-sus">要確認</span>' : ''}</td>`
           : '<td colspan="4" style="color:var(--sub)">未射撃</td>') + '</tr>'; }).join('')}</table></div>`;
   }).join('') + '<p class="hint">平均点は時間内かつ「要確認」でない発。反応はブザーから撃発までの時間（誤差は数十ms程度の見込み）。傾きは右が正、0点からの差。</p>';
+}
+// ---- 練成の分析（全セッションの練成モードの発を対象。練成者・練成内容で絞り込む）----
+// 点数は時間内かつ「要確認」でない発、反応時間は時間内の発、時間内率は（時間内の発数／実施した回数）。同じ回の2発目は除く。
+let anaShooter = lsGet('maco_ana_shooter') || '*', anaScen = lsGet('maco_ana_scen') || '';
+function anaKey(sc) { const c = scenCfg(sc) || {}; return sc.key + '|' + (c.label || ''); }
+const mean = (a) => a.length ? a.reduce((x, y) => x + y, 0) / a.length : null;
+async function renderScenAnalysis(sessions) {
+  const el = $('scenAnalysis');
+  const map = new Map(((await DB.getAll('shots')) || []).map(s => [s.key, s])); shots.forEach(s => map.set(s.key, s));
+  const all = [...map.values()].filter(s => !s.deleted && s.sc && !s.sc.extra);
+  if (!all.length) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  el.style.display = '';
+  const runMeta = new Map(); sessions.forEach(ss => (ss.runs || []).forEach(r => runMeta.set(r.run, r)));
+  if (session) (session.runs || []).forEach(r => runMeta.set(r.run, r));
+  const shooters = [...new Set(all.map(s => s.shooter || ''))].sort();
+  if (anaShooter !== '*' && !shooters.includes(anaShooter)) anaShooter = '*';
+  const byShooter = all.filter(s => anaShooter === '*' || (s.shooter || '') === anaShooter);
+  const groups = new Map(); byShooter.forEach(s => { const k = anaKey(s.sc); if (!groups.has(k)) groups.set(k, { label: (scenCfg(s.sc) || {}).label || s.sc.key, last: 0 }); groups.get(k).last = Math.max(groups.get(k).last, s.sc.run); });
+  const gList = [...groups.entries()].sort((a, b) => b[1].last - a[1].last);
+  if (!groups.has(anaScen)) anaScen = gList.length ? gList[0][0] : '';
+  const ds = byShooter.filter(s => anaKey(s.sc) === anaScen);
+  const cfg = ds.length ? scenCfg(ds[0].sc) : null;
+  // 練成1回ごとの集計
+  const runs = [...new Set(ds.map(s => s.sc.run))].sort((a, b) => a - b).map(id => {
+    const ss = ds.filter(s => s.sc.run === id), meta = runMeta.get(id); const reps = (meta && meta.reps) || (cfg && cfg.reps) || ss.length;
+    const st = scenStats(ss, reps); return { id, reps, st, shooter: ss[0].shooter || '' };
+  });
+  const sc = (s) => s.quality !== 'suspect' && s.predicted != null;
+  let html = `<h2>練成の分析</h2><div class="ana-filters">
+    <select id="anaShooter"><option value="*">練成者：全員</option>${shooters.map(n => `<option value="${escHtml(n)}" ${n === anaShooter ? 'selected' : ''}>${n ? escHtml(n) : '（未設定）'}</option>`).join('')}</select>
+    <select id="anaScen">${gList.map(([k, g]) => `<option value="${escHtml(k)}" ${k === anaScen ? 'selected' : ''}>${escHtml(g.label)}</option>`).join('')}</select></div>`;
+  if (!ds.length) { el.innerHTML = html + '<p class="hint">該当する記録がありません。</p>'; bindAna(); return; }
+  html += `<p class="hint" style="margin:0 0 4px">${runs.length}回の練成・${ds.length}発（全セッション）。点をタップすると値を表示します。</p>`;
+  // (1) 推移：1つの図に1つの指標（縦軸を共有しない）
+  const fmtD = (id) => new Date(id).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const capOf = (r) => `${fmtD(r.id)}${anaShooter === '*' && r.shooter ? '（' + r.shooter + '）' : ''}　平均${r.st.mean != null ? Math.round(r.st.mean) + '点' : '--'}・時間内${r.st.inTime}/${r.reps}・反応${r.st.reactMean != null ? (r.st.reactMean / 1000).toFixed(2) + '秒' : '--'}`;
+  html += `<div class="ana-h">平均点（予測）の推移</div>` + miniLine(runs.map(r => r.st.mean), 0, 100, 'aT1', [settings.bandHigh, settings.bandLow]) +
+    `<div class="ana-h">時間内率（%）の推移</div>` + miniLine(runs.map(r => r.st.inTime / r.reps * 100), 0, 100, 'aT2') +
+    `<div class="ana-h">平均反応時間（秒）の推移</div>` + miniLine(runs.map(r => r.st.reactMean != null ? r.st.reactMean / 1000 : null), 0, cfg ? Math.max(cfg.parMs / 1000, 0.5) : null, 'aT3', cfg ? [cfg.parMs / 1000] : []) +
+    `<div class="ana-cap" id="anaCap">${runs.length ? capOf(runs[runs.length - 1]) + '（最新）' : ''}</div>`;
+  // (2) 何発目・的ごと
+  const rowOf = (label, ss) => { const it = ss.filter(s => !s.sc.late);
+    return `<tr><td>${label}</td><td>${ss.length}</td><td>${ss.length ? Math.round(it.length / ss.length * 100) + '%' : '--'}</td><td>${it.length ? (mean(it.map(s => s.sc.react)) / 1000).toFixed(2) : '--'}</td><td>${it.filter(sc).length ? Math.round(mean(it.filter(sc).map(s => s.predicted))) : '--'}</td></tr>`; };
+  const head = '<tr><th></th><th>発数</th><th>時間内</th><th>反応(秒)</th><th>平均点</th></tr>';
+  const reps = [...new Set(ds.map(s => s.sc.rep))].sort((a, b) => a - b);
+  html += `<div class="ana-h">何発目ごと</div><table class="ana">${head}${reps.map(r => rowOf(`${r}発目`, ds.filter(s => s.sc.rep === r))).join('')}</table>`;
+  if (cfg && cfg.targets > 1) { const ts = [...new Set(ds.map(s => s.sc.target))].sort((a, b) => a - b);
+    html += `<div class="ana-h">的ごと</div><table class="ana">${head}${ts.map(t => rowOf(`的${t}`, ds.filter(s => s.sc.target === t))).join('')}</table>`; }
+  // (3) 反応時間と点数
+  const pts = ds.filter(sc);
+  html += `<div class="ana-h">反応時間と点数（●時間内 ○時間外）</div>` + scatterRS(pts, cfg ? cfg.parMs / 1000 : null) + `<div class="ana-cap" id="anaCap2"></div>` + rsSummary(pts.filter(s => !s.sc.late));
+  html += '<p class="hint">点数は時間内かつ「要確認」でない発、反応時間は時間内の発で集計。時間内率は時間内の発数÷実施した回数（未射撃を含む）。予測点数は±10点程度の幅で読んでください。</p>';
+  el.innerHTML = html; bindAna();
+  // 点のタップで値を表示
+  el.querySelectorAll('[data-ri]').forEach(c => c.onclick = () => { $('anaCap').textContent = capOf(runs[+c.dataset.ri]); });
+  el.querySelectorAll('[data-si]').forEach(c => c.onclick = () => { const s = pts[+c.dataset.si];
+    $('anaCap2').textContent = `${fmtD(s.sc.run)} ${s.sc.rep}発目${cfg && cfg.targets > 1 ? '・的' + s.sc.target : ''}：反応${(s.sc.react / 1000).toFixed(2)}秒・${Math.round(s.predicted)}点${s.sc.late ? '（時間外）' : ''}`; });
+  function bindAna() {
+    $('anaShooter').onchange = (e) => { anaShooter = e.target.value; lsSet('maco_ana_shooter', anaShooter); renderScenAnalysis(sessions); };
+    if ($('anaScen')) $('anaScen').onchange = (e) => { anaScen = e.target.value; lsSet('maco_ana_scen', anaScen); renderScenAnalysis(sessions); };
+  }
+}
+// 推移の小さな折れ線（1指標）。refs：参照線の値
+function miniLine(vals, lo, hi, id, refs) {
+  const W = 320, H = 96, L = 28, R = 8, T = 8, B = 14, n = vals.length;
+  const ok = vals.filter(v => v != null); if (!ok.length) return '<p class="hint">データなし</p>';
+  if (hi == null) hi = Math.max(...ok) * 1.15; hi = Math.max(hi, ...ok);
+  const xOf = i => L + (n <= 1 ? (W - L - R) / 2 : i / (n - 1) * (W - L - R)), yOf = v => T + (1 - (v - lo) / (hi - lo || 1)) * (H - T - B);
+  const fmt = v => hi <= 10 ? v.toFixed(1) : Math.round(v);
+  let g = [lo, hi].map(v => `<line x1="${L}" y1="${yOf(v)}" x2="${W - R}" y2="${yOf(v)}" stroke="#262a30"/><text x="2" y="${yOf(v) + 3}" font-size="9" fill="#8a8f98">${fmt(v)}</text>`).join('');
+  (refs || []).forEach(v => { if (v > lo && v < hi) g += `<line x1="${L}" y1="${yOf(v)}" x2="${W - R}" y2="${yOf(v)}" stroke="#8a8f98" stroke-dasharray="3,4" opacity="0.6"/>`; });
+  let d = ''; vals.forEach((v, i) => { if (v == null) return; d += (d ? 'L' : 'M') + xOf(i).toFixed(1) + ',' + yOf(v).toFixed(1); });
+  g += `<path d="${d}" stroke="#4fd1c5" stroke-width="2" fill="none"/>`;
+  vals.forEach((v, i) => { if (v == null) return;
+    g += `<circle cx="${xOf(i).toFixed(1)}" cy="${yOf(v).toFixed(1)}" r="4" fill="#4fd1c5" stroke="#14161a" stroke-width="2"/><circle data-ri="${i}" cx="${xOf(i).toFixed(1)}" cy="${yOf(v).toFixed(1)}" r="12" fill="transparent" style="cursor:pointer"/>`; });
+  const last = [...vals].reverse().find(v => v != null);
+  g += `<text x="${W - R}" y="${H - 2}" font-size="9" fill="#8a8f98" text-anchor="end">最新 ${fmt(last)}</text><text x="${L}" y="${H - 2}" font-size="9" fill="#8a8f98">古い</text>`;
+  return `<div class="chart-box"><svg id="${id}" viewBox="0 0 ${W} ${H}">${g}</svg></div>`;
+}
+// 反応時間（横）と予測点（縦）の散布図。縦の点線は射撃時間（これより右は時間外）
+function scatterRS(pts, parS) {
+  const W = 320, H = 170, L = 28, R = 8, T = 8, B = 18;
+  if (!pts.length) return '<p class="hint">データなし</p>';
+  const xs = pts.map(s => s.sc.react / 1000), hi = Math.max(parS || 0, ...xs) * 1.08;
+  const xOf = v => L + v / hi * (W - L - R), yOf = v => T + (1 - v / 100) * (H - T - B);
+  let g = [0, 50, 100].map(v => `<line x1="${L}" y1="${yOf(v)}" x2="${W - R}" y2="${yOf(v)}" stroke="#262a30"/><text x="2" y="${yOf(v) + 3}" font-size="9" fill="#8a8f98">${v}</text>`).join('');
+  for (let s = 0; s <= hi; s += hi > 6 ? 2 : 1) g += `<text x="${xOf(s)}" y="${H - 4}" font-size="9" fill="#8a8f98" text-anchor="middle">${s}秒</text>`;
+  if (parS) g += `<line x1="${xOf(parS)}" y1="${T}" x2="${xOf(parS)}" y2="${H - B}" stroke="#8a8f98" stroke-dasharray="3,4"/>`;
+  pts.forEach((s, i) => { const x = xOf(s.sc.react / 1000).toFixed(1), y = yOf(s.predicted).toFixed(1);
+    g += s.sc.late ? `<circle cx="${x}" cy="${y}" r="4" fill="none" stroke="#8a8f98" stroke-width="1.5"/>` : `<circle cx="${x}" cy="${y}" r="4" fill="#4fd1c5" stroke="#14161a" stroke-width="1.5"/>`;
+    g += `<circle data-si="${i}" cx="${x}" cy="${y}" r="11" fill="transparent" style="cursor:pointer"/>`; });
+  return `<div class="chart-box"><svg viewBox="0 0 ${W} ${H}">${g}</svg></div>`;
+}
+// 反応時間と点数の関係の要約（時間内の発）。速い1/3と遅い1/3の平均点、最小二乗の傾き
+function rsSummary(pts) {
+  if (pts.length < 6) return '<p class="hint">反応時間と点数の関係は、時間内の発が6発以上で表示します。</p>';
+  const a = pts.slice().sort((x, y) => x.sc.react - y.sc.react), k = Math.floor(a.length / 3);
+  const f = a.slice(0, k), sl = a.slice(-k);
+  const mx = mean(a.map(s => s.sc.react / 1000)), my = mean(a.map(s => s.predicted));
+  const sxx = a.reduce((t, s) => t + (s.sc.react / 1000 - mx) ** 2, 0), sxy = a.reduce((t, s) => t + (s.sc.react / 1000 - mx) * (s.predicted - my), 0);
+  const slope = sxx > 0 ? sxy / sxx : 0;
+  return `<p class="hint" style="color:var(--text)">速い1/3（${(f[f.length - 1].sc.react / 1000).toFixed(2)}秒まで）平均${Math.round(mean(f.map(s => s.predicted)))}点 ／ 遅い1/3（${(sl[0].sc.react / 1000).toFixed(2)}秒から）平均${Math.round(mean(sl.map(s => s.predicted)))}点。` +
+    `反応が0.5秒速いごとに約${Math.abs(slope * 0.5).toFixed(1)}点${slope > 0 ? '下がる' : '上がる'}傾向（${a.length}発、目安）。</p>`;
 }
 function renderTrend(live) {
   const svg = $('trendSvg'), W = 320, H = 150, L = 24, R = 8, T = 8, B = 16; const n = live.length;
@@ -1907,7 +2027,7 @@ async function exportCsv() {
     const all = ((session && sid === session.id) ? shots : ((await DB.byIndex('shots', 'sessionId', sid)) || [])).filter(s => !s.deleted).sort((a, b) => a.no - b.no);
     if (!all.length) { alert('出力できるショットがありません。'); return; }
     const b0 = all[0].bias || { gx: 0, gy: 0, gz: 0 }; const cache = {};
-    const header = 'No,時刻,検知方式,Mantisスコア,予測スコア,予測誤差,低下原因,最大ブレdps,ブレ量D,反動予期ヒント,フォロー減衰比,突き出しヒント,直前1秒spreadX,方向判定カテゴリ,方向判定角度deg,軌跡X,軌跡Y,軌跡t_ms,波形GyroX,波形GyroY,波形GyroZ,波形AccelX,波形AccelY,波形AccelZ,予測帯,判定低下要因,検知品質,撃発前最大dps,撃発後最大dps,銃種,傾きdeg,練成シナリオ,回,的,反応時間ms,時間内\n';
+    const header = 'No,時刻,検知方式,Mantisスコア,予測スコア,予測誤差,低下原因,最大ブレdps,ブレ量D,反動予期ヒント,フォロー減衰比,突き出しヒント,直前1秒spreadX,方向判定カテゴリ,方向判定角度deg,軌跡X,軌跡Y,軌跡t_ms,波形GyroX,波形GyroY,波形GyroZ,波形AccelX,波形AccelY,波形AccelZ,予測帯,判定低下要因,検知品質,撃発前最大dps,撃発後最大dps,銃種,傾きdeg,練成シナリオ,回,的,反応時間ms,時間内,練成者\n';
     const rows = []; let skipped = 0;
     for (const s of all) {
       const raw = await getRaw(s, cache); if (!raw) { skipped++; continue; }
@@ -1923,7 +2043,7 @@ async function exportCsv() {
         `"${j(samples, p => p.ax, 3)}"`, `"${j(samples, p => p.ay, 3)}"`, `"${j(samples, p => p.az, 3)}"`, bandOf(a.predicted, settings) || '',
         causeText(Object.assign({}, s, { band: bandOf(a.predicted, settings), quad: q })), s.quality === 'suspect' ? '要確認' : '通常',
         s.preMax != null ? s.preMax.toFixed(0) : '', s.postMax != null ? s.postMax.toFixed(0) : '', gunProfile(s.gun).label,
-        s.cant != null ? s.cant.toFixed(2) : '', s.sc && scenCfg(s.sc) ? scenCfg(s.sc).short.replace(/[,"]/g, ' ') : '', s.sc ? s.sc.rep : '', s.sc ? s.sc.target : '', s.sc ? s.sc.react : '', s.sc ? (s.sc.late ? '時間外' : '時間内') : ''].join(','));
+        s.cant != null ? s.cant.toFixed(2) : '', s.sc && scenCfg(s.sc) ? scenCfg(s.sc).short.replace(/[,"]/g, ' ') : '', s.sc ? s.sc.rep : '', s.sc ? s.sc.target : '', s.sc ? s.sc.react : '', s.sc ? (s.sc.late ? '時間外' : '時間内') : '', (s.shooter || '').replace(/[,"]/g, ' ')].join(','));
     }
     if (!rows.length) { alert('生波形が見つからず、CSVを作れませんでした。\n保存状況：ショット' + all.length + '件、生波形あり0件。\n「設定」で連続生データを保存しておくと、生波形から再構築できます。'); return; }
     const bias = `# 静止バイアス(dps): GyroX=${b0.gx.toFixed(3)}, GyroY=${b0.gy.toFixed(3)}, GyroZ=${b0.gz.toFixed(3)}\n`;
@@ -2034,6 +2154,7 @@ $('btnCalib').onclick = calibrate;
 $('btnCantZero').onclick = recordCantZero;
 $('scenSel').onchange = () => { settings.scen = $('scenSel').value; saveSettings(); renderScenBar(); };
 $('btnAddCustom').onclick = addCustom;
+$('shooterInput').onchange = () => { settings.shooter = $('shooterInput').value.trim(); saveSettings(); if (session) { session.shooter = settings.shooter; if (session.persisted) persistSession(); } renderGun(); };
 $('btnScen').onclick = () => { if (scenRun) finishScenario(true); else startScenario(); };
 $('btnResetSettings').onclick = () => { if (!confirm('設定を初期値に戻します。')) return; settings = Object.assign({}, DEFAULTS); saveSettings(); det.p = settings; det.mode = 'dry'; if (session) session.gun = settings.gun; renderSettings(); renderGun(); };
 $('selSession').onchange = (e) => { reviewSessionId = Number(e.target.value); renderReview(); };
@@ -2050,7 +2171,7 @@ $('pkM10').onclick = () => nudge(-10); $('pkP10').onclick = () => nudge(10); $('
 $('pkOK').onclick = () => { if (!pk) return; const cb = pk.onOK, sel = pk.sel; closePicker(); cb(sel); };
 
 function renderGun() {
-  $('gunTag').textContent = gunProfile(settings.gun).label;
+  $('gunTag').textContent = gunProfile(settings.gun).label + (settings.shooter ? '・' + settings.shooter : '');
 }
 function showIdle() {
   $('resScore').textContent = '--'; $('resBand').textContent = '–'; $('resBand').className = 'band'; $('hero').className = 'hero';
@@ -2062,7 +2183,7 @@ function showIdle() {
   await DB.open();
   makeDetector(); newSession(); reviewSessionId = session.id;
   onDetState('ARMED', {}); showIdle(); renderStrip(); renderCalib(); updateBanner(); renderSettings(); renderGun();
-  renderScenSelect(); renderCustomList(); renderScenBar();
+  renderScenSelect(); renderCustomList(); renderScenBar(); $('shooterInput').value = settings.shooter || '';
   if (!('bluetooth' in navigator)) $('btnConnect').title = 'Web Bluetooth対応ブラウザ（Bluefy等）で開いてください';
 })();
 </script>
