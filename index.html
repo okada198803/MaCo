@@ -384,6 +384,9 @@ const DEFAULTS = {
   shooter: '',      // 練成者（記録・振り返りの絞り込みに使う）
   scen: 'free',     // 練成モード（free=通常、t1=1コ的、t3=3コ的）
   scenLeadS: 3,     // 練成の開始ボタンから第1ブザーまでの秒数
+  scenSlideS: 1.5,  // ドライの連続射撃：1発あたりのスライド操作の時間（MaLIの目標の射撃間隔・合計時間に加算）
+  gbbRest1: 2,      // ガスブローバック時の1コ的の休止（秒。スライド操作が要らないため短縮）
+  gbbRest3: 2,      // ガスブローバック時の3コ的の休止（秒）
   scenLateMs: 1000, // 終了ブザー後、この時間内の撃発は「時間外」として記録（以降はスライド操作の時間とみなし記録しない）
   cantZero: 0,      // 傾き（カント）の0点（deg）。M5の取り付けの傾きを差し引く
   cantWarn: 3,      // 傾きの注意表示（deg、暫定）
@@ -1624,6 +1627,7 @@ function scheduleTone(ctxT, freq, dur, list) {
 const CUSTOM_FIELDS = [ // [キー, 表示名, 単位, 最小, 最大, 刻み, 既定値]（反復：1回ごとにブザー・1発）
   ['parS', '射撃時間', '秒', 0.5, 60, 0.1, 3],
   ['restS', 'スライド操作時間', '秒', 0, 60, 0.5, 5],
+  ['restGbbS', '休止（ガスブローバック時）', '秒', 0, 60, 0.5, 2],
   ['reps', '試行回数', '回', 1, 50, 1, 5],
   ['targets', '的数', '個', 1, 10, 1, 1],
   ['leadS', '開始までの秒数', '秒', 1, 30, 1, 3],
@@ -1656,11 +1660,32 @@ function customScenario(c) {
     return { type: 'string', label: `${c.name}（${c.shots}発）`, short: c.name, shots: c.shots, tmap, reloadAt: c.reloadAt < c.shots ? c.reloadAt : 0, limitMs: Math.round(c.limitS * 1000),
       goals: { first: c.gFirst, split: c.gSplit, total: c.gTotal, reload: c.gReload }, targets: Math.max(...tmap), leadS: c.leadS, custom: true };
   }
-  return { label: `${c.name}（${+c.parS.toFixed(1)}秒×${c.reps}発）`, short: c.name, reps: c.reps, parMs: Math.round(c.parS * 1000), restMs: Math.round(c.restS * 1000), targets: c.targets, leadS: c.leadS, custom: true };
+  return { label: `${c.name}（${+c.parS.toFixed(1)}秒×${c.reps}発）`, short: c.name, reps: c.reps, parMs: Math.round(c.parS * 1000), restMs: Math.round(c.restS * 1000), restGbbS: c.restGbbS, targets: c.targets, leadS: c.leadS, custom: true };
 }
-function scenarioOf(key) {
-  if (SCENARIOS[key]) return Object.assign({ leadS: settings.scenLeadS }, SCENARIOS[key]);
-  const c = customScens.find(x => x.id === key); return c ? customScenario(c) : null;
+// 銃種（ドライ／ガスブローバック）に合わせて練成の中身を切り替える（選択肢は共通）
+//   反復（1コ的・3コ的・カスタム反復）：ガスブローバックはスライド操作が要らないため休止を短縮した値を使う
+//   連続（MaLIの要領・カスタム連続）：目標値は実弾の値。ドライは1発ごとのスライド操作の時間を射撃間隔・合計時間の目標に加算
+// 名称に「・ドライ」「・GBB」を付け、振り返り・分析では別の練成として扱う
+function scenarioOf(key, gun) {
+  let sc = null;
+  if (SCENARIOS[key]) sc = Object.assign({ leadS: settings.scenLeadS }, SCENARIOS[key], { goals: SCENARIOS[key].goals ? Object.assign({}, SCENARIOS[key].goals) : undefined });
+  else { const c = customScens.find(x => x.id === key); if (c) sc = customScenario(c); }
+  return sc ? scenarioForGun(sc, gun || settings.gun, key) : null;
+}
+function scenarioForGun(sc, gun, key) {
+  const gbb = gunProfile(gun).mode === 'gbb'; sc.mode = gbb ? 'gbb' : 'dry';
+  if (sc.type === 'string') {
+    if (!gbb && sc.goals) {
+      const sl = settings.scenSlideS, nSplit = Math.max(0, sc.shots - 1 - (sc.reloadAt ? 1 : 0));
+      if (sc.goals.split) sc.goals.split = +(sc.goals.split + sl).toFixed(2);
+      if (sc.goals.total) sc.goals.total = +(sc.goals.total + sl * nSplit).toFixed(2);
+      sc.slideS = sl;
+    }
+  } else if (gbb) {
+    sc.restMs = Math.round((key === 't1' ? settings.gbbRest1 : key === 't3' ? settings.gbbRest3 : (sc.restGbbS != null ? sc.restGbbS : sc.restMs / 1000)) * 1000);
+  }
+  sc.label = sc.label + (gbb ? '・GBB' : '・ドライ');
+  return sc;
 }
 // 記録済みの発・練成の表示用（記録時の設定を保存しているので、カスタムを編集・削除しても当時の内容で表示する）
 function scenCfg(sc) { return (sc && (sc.cfg || SCENARIOS[sc.key])) || null; }
@@ -1760,8 +1785,8 @@ function finishScenario(aborted) {
   renderScenBar();
 }
 function scenSnap(sc) {
-  if (sc.type === 'string') return { type: 'string', label: sc.label, short: sc.short, shots: sc.shots, tmap: sc.tmap, reloadAt: sc.reloadAt, limitMs: sc.limitMs, goals: sc.goals, targets: sc.targets };
-  return { label: sc.label, short: sc.short, reps: sc.reps, parMs: sc.parMs, restMs: sc.restMs, targets: sc.targets };
+  if (sc.type === 'string') return { type: 'string', label: sc.label, short: sc.short, shots: sc.shots, tmap: sc.tmap, reloadAt: sc.reloadAt, limitMs: sc.limitMs, goals: sc.goals, targets: sc.targets, mode: sc.mode, slideS: sc.slideS };
+  return { label: sc.label, short: sc.short, reps: sc.reps, parMs: sc.parMs, restMs: sc.restMs, targets: sc.targets, mode: sc.mode };
 }
 // 連続射撃の終了時の表示（点数の平均は時間内・要確認でない・連射でない発）
 function showStringResult(r, list) {
@@ -2013,7 +2038,7 @@ function renderScenSummary(live, runs) {
         return `<tr><td>${x.rep}${sc.targets > 1 ? '・的' + x.target : ''}</td>` + (s ? `<td>${(s.sc.react / 1000).toFixed(2)}秒</td><td><span class="chip b-${s.band}">${Math.round(s.predicted)}</span></td><td>${cantText(s.cant).replace('傾き ', '')}</td><td>${s.sc.late ? '<span class="tag-late">時間外</span>' : ''}${s.quality === 'suspect' ? '<span class="tag-sus">要確認</span>' : ''}</td>`
           : '<td colspan="4" style="color:var(--sub)">未射撃</td>') + '</tr>'; }).join('')}</table></div>`;
   }).join('') + '<p class="hint">平均点は時間内かつ「要確認」でない発（連続射撃は連射の発も除く）。反応はブザーから撃発までの時間（誤差は数十ms程度の見込み）。傾きは右が正、0点からの差。' +
-    '連続射撃の評価（A〜D）はMaLIと同じ基準で、目標値は実弾の値。ドライはスライド操作を含むため間隔・合計は参考。</p>';
+    '連続射撃の評価（A〜D）はMaLIと同じ基準。目標値はGBBが実弾の値、ドライは1発ごとのスライド操作の時間（設定）を射撃間隔・合計時間に加えた値。</p>';
 }
 // ---- 練成の分析（全セッションの練成モードの発を対象。練成者・練成内容で絞り込む）----
 // 点数は時間内かつ「要確認」でない発、反応時間は時間内の発、時間内率は（時間内の発数／実施した回数）。同じ回の2発目は除く。
@@ -2069,7 +2094,7 @@ async function renderScenAnalysis(sessions) {
       html += `<div class="ana-h">的ごと</div><table class="ana">${headS}${ts.map(t => rowS(`的${t}`, ds.filter(s => s.sc.target === t))).join('')}</table>`; }
     const pts = ds.filter(s => sc(s) && s.sc.split != null && !(cfg.reloadAt && s.sc.rep === cfg.reloadAt + 1)).map(s => Object.assign({}, s, { sc: Object.assign({}, s.sc, { react: s.sc.split }) }));
     html += `<div class="ana-h">射撃間隔と点数（●時間内 ○時間外）</div>` + scatterRS(pts, g.split || null) + `<div class="ana-cap" id="anaCap2"></div>` + rsSummary(pts.filter(s => !s.sc.late)).replace(/反応/g, '間隔');
-    html += '<p class="hint">点数は時間内かつ「要確認」でない発で、前の発から0.6秒未満の連射は除く（採点の窓に前の発が入るため）。目標値の点線はMaLIの評価B基準（実弾）。</p>';
+    html += '<p class="hint">点数は時間内かつ「要確認」でない発で、前の発から0.6秒未満の連射は除く（採点の窓に前の発が入るため）。目標値の点線はMaLIの評価B基準（ドライはスライド操作の時間を加算）。</p>';
     el.innerHTML = html; bindAna();
     el.querySelectorAll('[data-ri]').forEach(c => c.onclick = () => { $('anaCap').textContent = capOf(runs[+c.dataset.ri]); });
     el.querySelectorAll('[data-si]').forEach(c => c.onclick = () => { const s = pts[+c.dataset.si];
@@ -2314,6 +2339,9 @@ const SET_SPEC = {
   ],
   setScen: [
     ['scenLeadS', '開始までの秒数', '練成の開始ボタンから第1ブザーまで', 1, 30, 1],
+    ['scenSlideS', 'ドライのスライド操作時間（秒/発）', 'MaLIの要領をドライで行うとき、射撃間隔・合計時間の目標に加算する', 0, 5, 0.1],
+    ['gbbRest1', 'ガスブローバック時の休止：1コ的（秒）', 'スライド操作が要らないため短縮（ドライは5秒）', 0, 10, 0.5],
+    ['gbbRest3', 'ガスブローバック時の休止：3コ的（秒）', '（ドライは3秒）', 0, 10, 0.5],
     ['scenLateMs', '時間外として記録する猶予（ms）', '終了ブザー後この時間内の撃発は「時間外」として記録。以降は休止中（スライド操作）とみなし記録しない', 0, 3000, 100],
     ['cantWarn', '傾きの注意（deg）', 'これ以上の傾きに⚠を付ける（暫定値）', 1, 15, 0.5],
   ],
@@ -2335,7 +2363,7 @@ function renderSettings() {
   });
   document.querySelectorAll('[data-k]').forEach(el => el.onchange = () => {
     const k = el.dataset.k; settings[k] = el.type === 'checkbox' ? el.checked : el.tagName === 'SELECT' ? el.value : (isNaN(parseFloat(el.value)) ? DEFAULTS[k] : parseFloat(el.value));
-    if (k === 'gun') { if (session) session.gun = settings.gun; if (det) det.mode = gunProfile(settings.gun).mode || 'dry'; renderGun(); }
+    if (k === 'gun') { if (session) session.gun = settings.gun; if (det) det.mode = gunProfile(settings.gun).mode || 'dry'; renderGun(); renderScenSelect(); }
     saveSettings(); if (det) det.p = settings;
     if (k === 'beep' && settings.beep) { try { if (!audioCtx && window.AudioContext) audioCtx = new AudioContext(); if (audioCtx) audioCtx.resume(); } catch (e) {} beep('中'); }
     if (k === 'rawRecord' && !settings.rawRecord) flushRaw();
