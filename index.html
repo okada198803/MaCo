@@ -370,6 +370,8 @@ const DEFAULTS = {
   suspectPost: 20,  // 「要確認」：撃発後の最大角速度がこの値以上（既存328件の99%点は26）
   holdMax: 4,       // 照準の保持：撃発前3秒(-3000〜-150ms)の合成角速度の中央値がこの値(dps)以上なら撃発とみなさない（構え直し・持ち替え中）
   holdMin: 0.5,     // 照準の保持：同じ中央値がこの値未満なら手で保持していない（台に置いた状態等）とみなし撃発としない
+  orientMax: 45,    // 銃の向き：重力方向が据銃時の向き（M5のZ軸）から この角度(deg)以上ずれていれば撃発とみなさない（置いた・横倒し等）
+  mountUp: false,   // M5の取り付けの向き：false＝据銃時に az≈-1G（既存の取り付け）、true＝上下逆（az≈+1G）
   holdRecent: 2.6,  // 照準の保持：3秒の中央値がholdMax以上でも、直前1秒(-1000〜-150ms)の中央値がこの値未満なら棄却せず「要確認」（据銃直後の撃発）
   slideG: 100,      // スライド操作とみなす合成角速度(dps)。撃発後300〜500msの最大は27dps
   slideD: 0.3,      // スライド操作とみなす加速度差分(G/サンプル)。撃発後300〜500msの最大は0.13
@@ -1025,6 +1027,8 @@ class ShotDetector {
     const info = { t0, peak: pk, gmax: recoil, width: 0, preMax, postMax: recoil };
     if (recoil < GBB_RECOIL_DPS) { info.reason = '反動が小さい（GBBの撃発ではない可能性）'; this.reject(info, this.tFirst + 150); return; }
     if (preMax >= p.rejectPre && !scen) { info.reason = '撃発の前に大きな動きがある（持ち替え・装填等）'; this.reject(info, this.lastT + 100); return; }
+    const oc = this.orientCheck(t0); if (oc) info.orientDev = oc.dev;
+    if (oc && oc.reason) { info.reason = oc.reason; this.reject(info, this.lastT + 100); return; }
     const hc = scen ? null : this.holdCheck(t0); if (hc) info.holdMed = hc.med;
     if (hc && hc.reason) { info.reason = hc.reason; this.reject(info, this.lastT + 100); return; }
     info.quality = (preMax >= p.suspectPre || (hc && hc.suspect)) ? 'suspect' : 'ok';
@@ -1045,6 +1049,8 @@ class ShotDetector {
       info.reason = preMax >= p.rejectPre ? '撃発の前に大きな動きがある（持ち替え・スライド操作等）' : '撃発の後に大きな動きがある（スライド操作等）';
       this.reject(info, this.lastT + 100); return;
     }
+    const oc = this.orientCheck(c.t0); if (oc) info.orientDev = oc.dev;
+    if (oc && oc.reason) { info.reason = oc.reason; this.reject(info, this.lastT + 100); return; }
     const hc = scen ? null : this.holdCheck(c.t0); if (hc) info.holdMed = hc.med;
     if (hc && hc.reason) { info.reason = hc.reason; this.reject(info, this.lastT + 100); return; }
     info.quality = (preMax >= p.suspectPre || postMax >= p.suspectPost || (hc && hc.suspect)) ? 'suspect' : 'ok';
@@ -1052,6 +1058,16 @@ class ShotDetector {
     this.scoreQueue.push({ t0: c.t0, quality: info.quality, preMax, postMax }); this.rawQueue.push(c.t0);
     this.emit('FIRED', { t0: c.t0 });
     if (this.h.onShot) this.h.onShot(this.fired);
+  }
+  // 銃の向きの確認（2026-10-25 GBB錬成で追加）。撃発直前(-300〜-50ms)の重力方向が、据銃時の向き(M5のZ軸、既定は-Z)から
+  // orientMax 以上ずれていれば撃発としない。誤検知：置いた状態 az=+1.0（180°）、横倒し 傾き-80°（az=-0.18）。
+  // 本物の撃発：既存のVP9・Glock・GBB 全発で上下±5°以内・傾き±8°以内、当日のGBB実射も上下最大22°。
+  orientCheck(t0) {
+    const w = this.window(t0 - 300, t0 - 50); if (w.length < 10) return null;
+    let x = 0, y = 0, z = 0; w.forEach(s => { x += s.ax; y += s.ay; z += s.az; });
+    const n = Math.hypot(x, y, z); if (!n) return null;
+    const dev = Math.acos(Math.max(-1, Math.min(1, (this.p.mountUp ? z : -z) / n))) * 180 / Math.PI;
+    return dev >= this.p.orientMax ? { dev, reason: `銃が据銃の向きでない（${dev.toFixed(0)}°ずれ。置いた状態・横倒し等）` } : { dev };
   }
   // 照準の保持の確認（2026-10-23 VP9錬成で追加）。撃発前3秒の合成角速度の中央値で判定する。
   //   本物の撃発：既存VP9 407発の99%点2.6・Glock 181発の最大2.0・GBB 100発の最大2.3、当日の実射45発の最大3.0、最小0.86
@@ -2386,6 +2402,8 @@ const SET_SPEC = {
     ['suspectPre', '要確認：撃発前の動き（dps）', 'これ以上は記録するが「要確認」を付け集計から除く', 5, 100, 5],
     ['suspectPost', '要確認：撃発後の動き（dps）', 'これ以上は記録するが「要確認」を付け集計から除く', 5, 100, 5],
     ['holdMax', '棄却：照準が安定していない（dps）', '撃発前3秒の角速度の中央値がこれ以上なら撃発とみなさない（本物の撃発は最大3.0、誤検知は4.5以上）', 2, 20, 0.5],
+    ['orientMax', '棄却：銃の向き（deg）', '撃発直前の重力方向が据銃時の向きからこの角度以上ずれていれば撃発とみなさない（置いた・横倒し等）。本物の撃発は最大22°', 20, 90, 5],
+    ['mountUp', 'M5を上下逆に取り付けている', '据銃時にM5の画面が上を向く取り付け（既存は画面が下向き）', 'bool'],
     ['holdRecent', '要確認：据銃直後の撃発（dps）', '3秒の揺れが上の値以上でも、直前1秒の中央値がこれ未満なら棄却せず「要確認」で記録', 1, 10, 0.1],
     ['holdMin', '棄却：手で保持していない（dps）', '同じ中央値がこれ未満なら台に置いた状態等とみなす（本物の撃発は最小0.86）', 0, 2, 0.1],
   ],
