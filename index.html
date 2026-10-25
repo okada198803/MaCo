@@ -389,6 +389,9 @@ const DEFAULTS = {
   scenLeadS: 3,     // 練成の開始ボタンから第1ブザーまでの秒数
   voice: 'drill',   // 結果の読み上げ（off／drill=自由練成以外／always）。Bluetoothイヤホン接続時はイヤホンから出る
   voiceCause: false, // 読み上げに低下要因を含める
+  voiceName: '',    // 読み上げの声（空は自動：拡張・プレミアムの日本語の声を優先）
+  voiceRate: 0.95,  // 読み上げの速さ（1.0が標準）
+  voicePitch: 1.0,  // 声の高さ（1.0が標準）
   audioDelayMs: 0,  // 音の出力遅れ（ms）。Bluetoothイヤホンの遅れ（約100〜300ms）を反応時間から差し引く
   scenSlideS: 1.5,  // ドライの連続射撃：1発あたりのスライド操作の時間（MaLIの目標の射撃間隔・合計時間に加算）
   gbbRest1: 2,      // ガスブローバック時の1コ的の休止（秒。スライド操作が要らないため短縮）
@@ -1738,21 +1741,39 @@ function addCustom() {
 }
 
 // ---- 読み上げ（Web Speech API。iOSでは最初の読み上げをタップ操作の中で行う必要がある）----
+// 声の選び方：設定で選んだ声 → 日本語の拡張・プレミアム版（iPhoneの設定で追加した高音質の声）→ Kyoko → 最初の日本語の声
+function jaVoices() { try { return (speechSynthesis.getVoices() || []).filter(v => /^ja/i.test(v.lang)); } catch (e) { return []; } }
+function voiceScore(v) { const n = v.name; return (/premium|プレミアム/i.test(n) ? 3 : /enhanced|拡張/i.test(n) ? 2 : 0) + (/kyoko|o-ren|otoya/i.test(n) ? 0.5 : 0); }
+function pickVoice() {
+  const vs = jaVoices(); if (!vs.length) return null;
+  return vs.find(v => v.name === settings.voiceName) || vs.slice().sort((a, b) => voiceScore(b) - voiceScore(a))[0];
+}
 function speak(text, interrupt) {
   try {
     if (!window.speechSynthesis || text == null) return;
     if (interrupt) speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text); u.lang = 'ja-JP'; u.rate = 1.15; u.volume = 1;
+    const u = new SpeechSynthesisUtterance(text); u.lang = 'ja-JP'; u.rate = settings.voiceRate || 1; u.pitch = settings.voicePitch || 1; u.volume = 1;
+    const v = pickVoice(); if (v) u.voice = v;
     speechSynthesis.speak(u);
   } catch (e) {}
 }
+// 設定画面：声の一覧（端末に入っている日本語の声）
+function renderVoiceSelect() {
+  const box = $('setVoice'); if (!box) return; let row = $('voiceNameRow');
+  if (!row) { row = document.createElement('div'); row.className = 'set-row'; row.id = 'voiceNameRow'; box.insertBefore(row, box.children[1] || null); }
+  const vs = jaVoices(), cur = pickVoice();
+  row.innerHTML = `<div class="sl">声<small>${vs.length ? '自動は高音質（拡張・プレミアム）の声を優先' : '日本語の声が見つかりません'}</small></div><select class="set-sel" id="voiceNameSel"><option value="">自動${cur && !settings.voiceName ? '（' + escHtml(cur.name) + '）' : ''}</option>` +
+    vs.map(v => `<option value="${escHtml(v.name)}" ${v.name === settings.voiceName ? 'selected' : ''}>${escHtml(v.name)}</option>`).join('') + '</select>';
+  $('voiceNameSel').onchange = (e) => { settings.voiceName = e.target.value; saveSettings(); renderVoiceSelect(); speak('九十二点です。', true); };
+}
+try { if (window.speechSynthesis) speechSynthesis.onvoiceschanged = () => renderVoiceSelect(); } catch (e) {}
 function voiceOn() { return settings.voice === 'always' || (settings.voice === 'drill' && !!scenRun); }
 function speakShot(shot) {
   if (!voiceOn() || (scenRun && scenRun.sc.type === 'string')) return; // 連続射撃は撃発ごとに読まない（射撃の妨げになるため）
-  let t = (shot.predicted == null ? '採点不可' : Math.round(shot.predicted) + '点');
-  if (shot.sc && shot.sc.late) t = '時間外、' + t;
-  if (shot.quality === 'suspect') t += '、要確認';
-  if (settings.voiceCause && shot.band !== '高') { const gk = guideKeyOf(shot); if (gk && CAUSE_GUIDE[gk] && gk !== 'small' && gk !== 'none') t += '、' + CAUSE_GUIDE[gk].title.split('・')[0]; }
+  // 文として読ませると抑揚が自然になるため、「です」で終える
+  let t = shot.predicted == null ? '採点できませんでした。' : (shot.sc && shot.sc.late ? '時間外、' : '') + Math.round(shot.predicted) + '点です。';
+  if (settings.voiceCause && shot.band !== '高') { const gk = guideKeyOf(shot); if (gk && CAUSE_GUIDE[gk] && gk !== 'small' && gk !== 'none') t += CAUSE_GUIDE[gk].title.split('・')[0] + 'の可能性。'; }
+  if (shot.quality === 'suspect') t += '要確認です。';
   speak(t, true);
 }
 // Bluetoothイヤホンは無音が続くと省電力で音の頭が欠けるため、練成中はごく小さい音を流し続けて接続を保つ
@@ -1794,7 +1815,7 @@ function startScenario() {
   scenRun.tick = setInterval(renderScenBar, 100);
   showActBar(true);
   startKeepAlive();
-  if (voiceOn()) speak(lead >= 2500 ? `${sc.short}、開始します` : ' ', true); else speak(' ', true); // iOS：タップ操作の中で読み上げを有効にしておく
+  if (voiceOn()) speak(lead >= 2500 ? `${sc.short}を開始します。` : ' ', true); else speak(' ', true); // iOS：タップ操作の中で読み上げを有効にしておく
   scenRun.sc.audioDelayMs = settings.audioDelayMs || 0;
   showIdle(); $('resCause').textContent = `${sc.label}：開始ブザーで射撃`; $('resMeta').textContent = audioCtx ? 'iPhoneのマナーモード中は音が出ません。' : 'この環境では音を出せないため、上の表示で合図します。';
   renderScenBar();
@@ -1815,11 +1836,11 @@ function finishScenario(aborted) {
   if (r.sc.type === 'string') {
     showStringResult(r, list); renderScenBar();
     if (vo) { const m = stringMetrics(list, r.sc, r.actions), ok = list.filter(s => !s.sc.late && !s.sc.rapid && s.quality !== 'suspect' && s.predicted != null);
-      speak(`${r.sc.short}、${list.length}発` + (m ? `、合計${m.total.toFixed(1)}秒` + (m.split != null ? `、間隔${m.split.toFixed(1)}秒` : '') : '') + (ok.length ? `、平均${Math.round(mean(ok.map(s => s.predicted)))}点` : ''), false); }
+      speak(`${r.sc.short}、終了です。${list.length}発、` + (m ? `合計${m.total.toFixed(1)}秒` + (m.split != null ? `、射撃間隔は平均${m.split.toFixed(1)}秒` : '') : '') + (ok.length ? `、平均${Math.round(mean(ok.map(s => s.predicted)))}点でした。` : 'でした。'), false); }
     return;
   }
   const st = scenStats(list, tl.length);
-  if (vo) speak(`${r.sc.short}、${aborted ? '中止' : '終了'}。時間内、${tl.length}発中${st.inTime}発` + (st.mean != null ? `、平均${Math.round(st.mean)}点` : '') + (st.reactMean != null ? `、反応${(st.reactMean / 1000).toFixed(1)}秒` : ''), false);
+  if (vo) speak(`${r.sc.short}、${aborted ? '中止しました' : '終了です'}。${tl.length}発中${st.inTime}発が時間内` + (st.mean != null ? `、平均${Math.round(st.mean)}点` : '') + (st.reactMean != null ? `、反応は平均${(st.reactMean / 1000).toFixed(1)}秒` : '') + 'でした。', false);
   $('hero').className = 'hero' + (st.n ? ' b-' + bandOf(st.mean, settings) : '');
   $('resScore').textContent = st.n ? Math.round(st.mean) : '--';
   $('resBand').textContent = st.n ? bandOf(st.mean, settings) : '–'; $('resBand').className = 'band' + (st.n ? ' b-' + bandOf(st.mean, settings) : '');
@@ -2392,6 +2413,8 @@ const SET_SPEC = {
   ],
   setVoice: [
     ['voice', '結果の読み上げ', '撃発ごとに点数を読み上げ、練成の終了時に結果をまとめて読み上げる（連続射撃は終了時のみ）', 'select', { off: 'しない', drill: '自由練成以外', always: '常に' }],
+    ['voiceRate', '読み上げの速さ', '1.0が標準。小さいほどゆっくり', 0.5, 1.5, 0.05],
+    ['voicePitch', '声の高さ', '1.0が標準', 0.5, 1.5, 0.05],
     ['voiceCause', '読み上げに低下要因を含める', '中・低のときのみ。長くなるため次のブザーと重なることがある', 'bool'],
     ['audioDelayMs', '音の出力遅れ（ms）', 'ブザーが耳に届くまでの遅れ。反応時間から差し引く', 0, 600, 10],
   ],
@@ -2419,7 +2442,7 @@ function renderSettings() {
     if (k === 'rawRecord' && !settings.rawRecord) flushRaw();
     if (k === 'liveTraj' && !settings.liveTraj && det.state === 'ARMED') $('trajSvg').innerHTML = '';
   });
-  renderCalib(); renderDiag(); renderCantStatus();
+  renderCalib(); renderDiag(); renderCantStatus(); renderVoiceSelect();
 }
 function renderDiag() {
   const el = $('diagText'); if (!el || !det) return;
@@ -2448,7 +2471,7 @@ $('btnCantZero').onclick = recordCantZero;
 $('scenSel').onchange = () => { settings.scen = $('scenSel').value; saveSettings(); renderScenBar(); };
 $('btnAddCustom').onclick = addCustom;
 $('btnTestBuzz').onclick = testBuzz;
-$('btnTestVoice').onclick = () => speak('九十二点。読み上げのテストです。', true);
+$('btnTestVoice').onclick = () => speak('92点です。1コ的、終了です。4発中3発が時間内、平均88点でした。', true);
 ['actReload', 'actMal'].forEach(id => { const el = $(id), ty = el.dataset.type;
   el.addEventListener('pointerdown', e => actStart(ty, e)); ['pointerup', 'pointercancel', 'pointerleave'].forEach(n => el.addEventListener(n, e => actEnd(ty, e)));
   el.addEventListener('contextmenu', e => e.preventDefault()); });
