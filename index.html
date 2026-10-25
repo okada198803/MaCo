@@ -285,6 +285,9 @@
     <div class="panel"><h2>練成モード・傾き（カント）</h2><div id="setScen"></div>
       <button id="btnCantZero" style="width:100%;margin-top:8px;">傾きの0点を記録し直す（照準を正立させて構えた状態で押す）</button>
       <p class="hint" id="cantStatus"></p></div>
+    <div class="panel"><h2>音声（Bluetoothイヤホン）</h2><div id="setVoice"></div>
+      <div class="sheet-btns"><button id="btnTestBuzz">ブザーをテスト</button><button id="btnTestVoice">読み上げをテスト</button></div>
+      <p class="hint">iPhoneの音（ブザー・読み上げ）は、接続中のBluetoothイヤホンから出ます。マナーモード中は鳴りません。イヤホンは音が届くまでに遅れがあるため、「音の出力遅れ」に設定した値を反応時間から差し引きます（AirPods等は約150〜250ms。機種ごとに異なり、自動では測れません）。</p></div>
     <div class="panel"><h2>カスタム練成</h2><div id="customList"></div>
       <button id="btnAddCustom" style="width:100%;margin-top:8px;">カスタム練成を追加</button>
       <p class="hint">1回＝開始ブザー → 射撃時間内に1発 → 終了ブザー → スライド操作時間（休止）。錬成画面上部の選択肢に「4」以降として表示されます。「設定を初期値に戻す」では消えません。</p></div>
@@ -384,6 +387,9 @@ const DEFAULTS = {
   shooter: '',      // 練成者（記録・振り返りの絞り込みに使う）
   scen: 'free',     // 練成モード（free=通常、t1=1コ的、t3=3コ的）
   scenLeadS: 3,     // 練成の開始ボタンから第1ブザーまでの秒数
+  voice: 'drill',   // 結果の読み上げ（off／drill=自由練成以外／always）。Bluetoothイヤホン接続時はイヤホンから出る
+  voiceCause: false, // 読み上げに低下要因を含める
+  audioDelayMs: 0,  // 音の出力遅れ（ms）。Bluetoothイヤホンの遅れ（約100〜300ms）を反応時間から差し引く
   scenSlideS: 1.5,  // ドライの連続射撃：1発あたりのスライド操作の時間（MaLIの目標の射撃間隔・合計時間に加算）
   gbbRest1: 2,      // ガスブローバック時の1コ的の休止（秒。スライド操作が要らないため短縮）
   gbbRest3: 2,      // ガスブローバック時の3コ的の休止（秒）
@@ -1432,7 +1438,7 @@ function finalizeShot(t0, method = 'auto', meta) {
   showResult(shot); drawTraj(a.traj, { live: false });
   trajFrozen = true;
   $('trajTitle').textContent = '軌跡 No.' + shot.no; $('trajCap').textContent = '青→黄→×(撃発)→赤　スライド操作後に照準表示へ';
-  renderStrip(); if (!scenRun) beep(band);
+  renderStrip(); if (!scenRun) beep(band); speakShot(shot);
   persistSession(); DB.put('shots', Object.assign({}, shot));
   if (method === 'manual') {
     if (det.lastT >= t0 + RAW_POST_MS) fillRaw(t0); else det.rawQueue.push(t0);
@@ -1731,6 +1737,33 @@ function addCustom() {
   customScens.push(c); saveCustom(); renderCustomList(); renderScenSelect();
 }
 
+// ---- 読み上げ（Web Speech API。iOSでは最初の読み上げをタップ操作の中で行う必要がある）----
+function speak(text, interrupt) {
+  try {
+    if (!window.speechSynthesis || text == null) return;
+    if (interrupt) speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text); u.lang = 'ja-JP'; u.rate = 1.15; u.volume = 1;
+    speechSynthesis.speak(u);
+  } catch (e) {}
+}
+function voiceOn() { return settings.voice === 'always' || (settings.voice === 'drill' && !!scenRun); }
+function speakShot(shot) {
+  if (!voiceOn() || (scenRun && scenRun.sc.type === 'string')) return; // 連続射撃は撃発ごとに読まない（射撃の妨げになるため）
+  let t = (shot.predicted == null ? '採点不可' : Math.round(shot.predicted) + '点');
+  if (shot.sc && shot.sc.late) t = '時間外、' + t;
+  if (shot.quality === 'suspect') t += '、要確認';
+  if (settings.voiceCause && shot.band !== '高') { const gk = guideKeyOf(shot); if (gk && CAUSE_GUIDE[gk] && gk !== 'small' && gk !== 'none') t += '、' + CAUSE_GUIDE[gk].title.split('・')[0]; }
+  speak(t, true);
+}
+// Bluetoothイヤホンは無音が続くと省電力で音の頭が欠けるため、練成中はごく小さい音を流し続けて接続を保つ
+function startKeepAlive() {
+  if (!audioCtx || keepAlive) return;
+  try { const o = audioCtx.createOscillator(), g = audioCtx.createGain(); o.frequency.value = 30; g.gain.value = 0.0005; o.connect(g); g.connect(audioCtx.destination); o.start(); keepAlive = o; } catch (e) {}
+}
+function stopKeepAlive() { if (keepAlive) { try { keepAlive.stop(); keepAlive.disconnect(); } catch (e) {} keepAlive = null; } }
+let keepAlive = null;
+function testBuzz() { ensureAudio(); if (!audioCtx) return; const t = audioCtx.currentTime + 0.1, l = []; scheduleTone(t, 1800, 0.4, l); scheduleTone(t + 1, 950, 0.15, l); scheduleTone(t + 1.23, 950, 0.15, l); }
+
 function startScenario() {
   if (scenRun) return; // 実施中は二重に開始しない
   const sc = scenarioOf(settings.scen); if (!sc) return;
@@ -1745,6 +1778,7 @@ function startScenario() {
     const ts = audioCtx.getOutputTimestamp ? audioCtx.getOutputTimestamp() : null;
     if (ts && ts.performanceTime > 0) perf0 = ts.performanceTime + (base - ts.contextTime) * 1000;
     else perf0 = performance.now() + 50 + ((audioCtx.outputLatency || 0) + (audioCtx.baseLatency || 0)) * 1000;
+    perf0 += settings.audioDelayMs || 0; // Bluetoothイヤホンの遅れ：ブザーが耳に届く時刻を基準にする
     tl.forEach(r => {
       scheduleTone(base + r.start / 1000, 1800, 0.4, osc);                                   // 開始：高音1回
       if (isFinite(r.end)) { scheduleTone(base + r.end / 1000, 950, 0.15, osc); scheduleTone(base + r.end / 1000 + 0.23, 950, 0.15, osc); } // 終了：低音2回（連続射撃は制限時間がある場合のみ）
@@ -1759,6 +1793,9 @@ function startScenario() {
   if (det.state !== 'ARMED') det.rearm();
   scenRun.tick = setInterval(renderScenBar, 100);
   showActBar(true);
+  startKeepAlive();
+  if (voiceOn()) speak(lead >= 2500 ? `${sc.short}、開始します` : ' ', true); else speak(' ', true); // iOS：タップ操作の中で読み上げを有効にしておく
+  scenRun.sc.audioDelayMs = settings.audioDelayMs || 0;
   showIdle(); $('resCause').textContent = `${sc.label}：開始ブザーで射撃`; $('resMeta').textContent = audioCtx ? 'iPhoneのマナーモード中は音が出ません。' : 'この環境では音を出せないため、上の表示で合図します。';
   renderScenBar();
 }
@@ -1773,8 +1810,16 @@ function finishScenario(aborted) {
   session.runs = session.runs || []; session.runs.push({ run: r.run, key: r.key, reps: r.sc.type === 'string' ? r.sc.shots : tl.length, aborted: !!aborted, cfg: scenSnap(r.sc), actions: r.actions });
   persistSession();
   const list = shots.filter(s => !s.deleted && s.sc && s.sc.run === r.run && !s.sc.extra);
-  if (r.sc.type === 'string') { showStringResult(r, list); renderScenBar(); return; }
+  stopKeepAlive();
+  const vo = settings.voice !== 'off';
+  if (r.sc.type === 'string') {
+    showStringResult(r, list); renderScenBar();
+    if (vo) { const m = stringMetrics(list, r.sc, r.actions), ok = list.filter(s => !s.sc.late && !s.sc.rapid && s.quality !== 'suspect' && s.predicted != null);
+      speak(`${r.sc.short}、${list.length}発` + (m ? `、合計${m.total.toFixed(1)}秒` + (m.split != null ? `、間隔${m.split.toFixed(1)}秒` : '') : '') + (ok.length ? `、平均${Math.round(mean(ok.map(s => s.predicted)))}点` : ''), false); }
+    return;
+  }
   const st = scenStats(list, tl.length);
+  if (vo) speak(`${r.sc.short}、${aborted ? '中止' : '終了'}。時間内、${tl.length}発中${st.inTime}発` + (st.mean != null ? `、平均${Math.round(st.mean)}点` : '') + (st.reactMean != null ? `、反応${(st.reactMean / 1000).toFixed(1)}秒` : ''), false);
   $('hero').className = 'hero' + (st.n ? ' b-' + bandOf(st.mean, settings) : '');
   $('resScore').textContent = st.n ? Math.round(st.mean) : '--';
   $('resBand').textContent = st.n ? bandOf(st.mean, settings) : '–'; $('resBand').className = 'band' + (st.n ? ' b-' + bandOf(st.mean, settings) : '');
@@ -1785,8 +1830,8 @@ function finishScenario(aborted) {
   renderScenBar();
 }
 function scenSnap(sc) {
-  if (sc.type === 'string') return { type: 'string', label: sc.label, short: sc.short, shots: sc.shots, tmap: sc.tmap, reloadAt: sc.reloadAt, limitMs: sc.limitMs, goals: sc.goals, targets: sc.targets, mode: sc.mode, slideS: sc.slideS };
-  return { label: sc.label, short: sc.short, reps: sc.reps, parMs: sc.parMs, restMs: sc.restMs, targets: sc.targets, mode: sc.mode };
+  if (sc.type === 'string') return { type: 'string', label: sc.label, short: sc.short, shots: sc.shots, tmap: sc.tmap, reloadAt: sc.reloadAt, limitMs: sc.limitMs, goals: sc.goals, targets: sc.targets, mode: sc.mode, slideS: sc.slideS, audioDelayMs: sc.audioDelayMs };
+  return { label: sc.label, short: sc.short, reps: sc.reps, parMs: sc.parMs, restMs: sc.restMs, targets: sc.targets, mode: sc.mode, audioDelayMs: sc.audioDelayMs };
 }
 // 連続射撃の終了時の表示（点数の平均は時間内・要確認でない・連射でない発）
 function showStringResult(r, list) {
@@ -2345,6 +2390,11 @@ const SET_SPEC = {
     ['scenLateMs', '時間外として記録する猶予（ms）', '終了ブザー後この時間内の撃発は「時間外」として記録。以降は休止中（スライド操作）とみなし記録しない', 0, 3000, 100],
     ['cantWarn', '傾きの注意（deg）', 'これ以上の傾きに⚠を付ける（暫定値）', 1, 15, 0.5],
   ],
+  setVoice: [
+    ['voice', '結果の読み上げ', '撃発ごとに点数を読み上げ、練成の終了時に結果をまとめて読み上げる（連続射撃は終了時のみ）', 'select', { off: 'しない', drill: '自由練成以外', always: '常に' }],
+    ['voiceCause', '読み上げに低下要因を含める', '中・低のときのみ。長くなるため次のブザーと重なることがある', 'bool'],
+    ['audioDelayMs', '音の出力遅れ（ms）', 'ブザーが耳に届くまでの遅れ。反応時間から差し引く', 0, 600, 10],
+  ],
   setMisc: [
     ['liveTraj', '待機中の軌跡をリアルタイム表示', '', 'bool'],
     ['beep', '採点結果を音で通知', '高:1回 中:2回 低:3回（接続時に音声を有効化）', 'bool'],
@@ -2397,6 +2447,8 @@ $('btnCalib').onclick = calibrate;
 $('btnCantZero').onclick = recordCantZero;
 $('scenSel').onchange = () => { settings.scen = $('scenSel').value; saveSettings(); renderScenBar(); };
 $('btnAddCustom').onclick = addCustom;
+$('btnTestBuzz').onclick = testBuzz;
+$('btnTestVoice').onclick = () => speak('九十二点。読み上げのテストです。', true);
 ['actReload', 'actMal'].forEach(id => { const el = $(id), ty = el.dataset.type;
   el.addEventListener('pointerdown', e => actStart(ty, e)); ['pointerup', 'pointercancel', 'pointerleave'].forEach(n => el.addEventListener(n, e => actEnd(ty, e)));
   el.addEventListener('contextmenu', e => e.preventDefault()); });
