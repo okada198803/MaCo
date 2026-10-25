@@ -115,6 +115,7 @@
   .scen-run .h { font-weight: 700; font-size: 13px; } .scen-run .s { color: var(--sub); margin-top: 2px; }
   .scen-run table { width: 100%; border-collapse: collapse; margin-top: 4px; font-variant-numeric: tabular-nums; }
   .scen-run td { padding: 3px 4px; border-bottom: 1px solid var(--border); }
+  .shooter-grid { display: grid; grid-template-columns: 1fr 1.4fr; gap: 6px; }
   .ana-filters { display: flex; gap: 6px; margin-bottom: 8px; }
   .ana-filters select { flex: 1; min-width: 0; background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px; font-size: 13px; }
   .ana-h { font-size: 12px; color: var(--sub); margin: 10px 0 2px; font-weight: 600; }
@@ -264,6 +265,7 @@
     </div>
     <div class="hint" id="storageStatus" style="margin:0 0 8px 0;"></div>
     <div class="row"><button id="btnExportCsv">CSV 共有・保存</button><button id="btnExportRaw">連続生データ</button></div>
+    <div class="row"><button id="btnMasalOne">MaSaL出力（このセッション）</button><button id="btnMasalAll">MaSaL出力（全セッション）</button></div>
     <p class="hint">CSVは開発用アプリ（index.html）と同じ列構成です。連続生データは「設定」で記録をオンにした場合のみ保存されます。</p>
   </section>
 
@@ -271,8 +273,16 @@
   <section class="view" id="viewSettings">
     <div class="panel">
       <h2>練成者</h2>
-      <input type="text" class="full" id="shooterInput" maxlength="16" placeholder="氏名・記号（例：岡田）">
-      <p class="hint">以降に記録するショットに付けます。振り返りの「練成の分析」で練成者ごとに絞り込めます。</p>
+      <div class="shooter-grid">
+        <input type="text" class="full" id="shooterCodeInput" maxlength="16" placeholder="記号（例 A001）">
+        <input type="text" class="full" id="shooterInput" maxlength="16" placeholder="氏名（例 岡田）">
+      </div>
+      <input type="text" class="full" id="shooterUnitInput" maxlength="40" placeholder="所属（例 1中隊/2小隊/3班）" style="margin-top:6px;">
+      <select class="full" id="rosterSel" style="margin-top:6px;display:none;"></select>
+      <div class="sheet-btns"><button id="btnRosterLoad">名簿を読み込む（MaLIの設定ファイル）</button></div>
+      <input type="file" id="rosterFile" accept=".json,application/json" style="display:none;">
+      <p class="hint" id="rosterStatus"></p>
+      <p class="hint">以降に記録するショットに付けます。記号はMaLI・MaSaLと共通の射手の識別に使います（MaSaLでの結び付けは記号が優先）。所属は「/」で階層を区切ります。</p>
     </div>
     <div class="panel">
       <h2>静止バイアス</h2>
@@ -359,6 +369,7 @@
 // =========================================================
 
 // ==CORE_BEGIN==
+const MACO_VERSION = 'MaCo錬成 2026-10-25';
 // ---- 設定の既定値（検知パラメータは既存の328件の波形で検証した値） ----
 const DEFAULTS = {
   thr: 0.08,        // 撃発候補：加速度差分(G/サンプル)のしきい値
@@ -386,7 +397,9 @@ const DEFAULTS = {
   liveTraj: true,   // 待機中に照準の軌跡をリアルタイム表示
   beep: false,      // 採点結果を音で通知
   rawRecord: false, // 連続生データを保存（検知ルールの検証用）
-  shooter: '',      // 練成者（記録・振り返りの絞り込みに使う）
+  shooter: '',      // 練成者の氏名（記録・振り返りの絞り込みに使う）
+  shooterCode: '',  // 練成者の記号（MaLI・MaCo・MaSaLで射手を結び付けるキー）
+  shooterUnit: '',  // 練成者の所属（「/」区切りの階層。例 1中隊/2小隊/3班）
   scen: 'free',     // 練成モード（free=通常、t1=1コ的、t3=3コ的）
   scenLeadS: 3,     // 練成の開始ボタンから第1ブザーまでの秒数
   voice: 'drill',   // 結果の読み上げ（off／drill=自由練成以外／always）。Bluetoothイヤホン接続時はイヤホンから出る
@@ -1372,12 +1385,12 @@ const STATE_LABEL = { ARMED: '待機中', PENDING: '判定中', CONFIRM: '判定
 const METHOD_LABEL = { auto: '自動検知(錬成)', manual: '手動追加(錬成)' };
 
 function newSession() {
-  session = { id: Date.now(), start: Date.now(), count: 0, gun: settings.gun, bias: Object.assign({}, det ? det.bias : (savedBias ? savedBias.bias : { gx: 0, gy: 0, gz: 0 })), persisted: false, runs: [], shooter: settings.shooter || '' };
+  session = { id: Date.now(), start: Date.now(), count: 0, gun: settings.gun, bias: Object.assign({}, det ? det.bias : (savedBias ? savedBias.bias : { gx: 0, gy: 0, gz: 0 })), persisted: false, runs: [], shooter: settings.shooter || '', shooterCode: settings.shooterCode || '', shooterUnit: settings.shooterUnit || '' };
   shots = []; rawBuf = []; rawChunkIdx = 0; lastShotShown = null;
 }
 async function persistSession() {
   session.persisted = true;
-  await DB.put('sessions', { id: session.id, start: session.start, count: session.count, gun: session.gun, bias: session.bias, rawChunks: rawChunkIdx, runs: session.runs || [], shooter: session.shooter || '' });
+  await DB.put('sessions', { id: session.id, start: session.start, count: session.count, gun: session.gun, bias: session.bias, rawChunks: rawChunkIdx, runs: session.runs || [], shooter: session.shooter || '', shooterCode: session.shooterCode || '', shooterUnit: session.shooterUnit || '' });
 }
 
 // ---- 検知器の生成 ----
@@ -1449,7 +1462,7 @@ function finalizeShot(t0, method = 'auto', meta) {
     key: session.id + ':' + session.count, sessionId: session.id, no: session.count, wall: Date.now(), method,
     t0Abs: t0, t0Rel: 0, predicted: a.predicted, band, quad: a.quad,
     quality: (meta && meta.quality) || 'ok', preMax: meta && meta.preMax != null ? meta.preMax : null, postMax: meta && meta.postMax != null ? meta.postMax : null, mantis: null, cause: '', causeFree: '', deleted: false,
-    bias: Object.assign({}, det.bias), rawReady: false, gun: settings.gun, shooter: settings.shooter || '',
+    bias: Object.assign({}, det.bias), rawReady: false, gun: settings.gun, shooter: settings.shooter || '', shooterCode: settings.shooterCode || '', shooterUnit: settings.shooterUnit || '',
     cant: cantOf(ws, t0, settings.cantZero), sc,
   };
   shots.push(shot);
@@ -1978,7 +1991,7 @@ async function flushRaw() {
   rawBuf = []; const idx = rawChunkIdx++;
   if (!session.persisted) await persistSession();
   await DB.put('chunks', { key: session.id + ':' + idx, sessionId: session.id, idx, t, v });
-  await DB.put('sessions', { id: session.id, start: session.start, count: session.count, gun: session.gun, bias: session.bias, rawChunks: rawChunkIdx, runs: session.runs || [], shooter: session.shooter || '' });
+  await DB.put('sessions', { id: session.id, start: session.start, count: session.count, gun: session.gun, bias: session.bias, rawChunks: rawChunkIdx, runs: session.runs || [], shooter: session.shooter || '', shooterCode: session.shooterCode || '', shooterUnit: session.shooterUnit || '' });
 }
 
 // ---- 静止バイアス ----
@@ -2135,9 +2148,11 @@ async function renderScenAnalysis(sessions) {
   el.style.display = '';
   const runMeta = new Map(); sessions.forEach(ss => (ss.runs || []).forEach(r => runMeta.set(r.run, r)));
   if (session) (session.runs || []).forEach(r => runMeta.set(r.run, r));
-  const shooters = [...new Set(all.map(s => s.shooter || ''))].sort();
+  const skey = (s) => s.shooterCode || s.shooter || '';
+  const sname = new Map(); all.forEach(s => { const k = skey(s); if (!sname.has(k)) sname.set(k, s.shooterCode ? `${s.shooterCode} ${s.shooter || ''}`.trim() : (s.shooter || '')); });
+  const shooters = [...sname.keys()].sort();
   if (anaShooter !== '*' && !shooters.includes(anaShooter)) anaShooter = '*';
-  const byShooter = all.filter(s => anaShooter === '*' || (s.shooter || '') === anaShooter);
+  const byShooter = all.filter(s => anaShooter === '*' || skey(s) === anaShooter);
   const groups = new Map(); byShooter.forEach(s => { const k = anaKey(s.sc); if (!groups.has(k)) groups.set(k, { label: (scenCfg(s.sc) || {}).label || s.sc.key, last: 0 }); groups.get(k).last = Math.max(groups.get(k).last, s.sc.run); });
   const gList = [...groups.entries()].sort((a, b) => b[1].last - a[1].last);
   if (!groups.has(anaScen)) anaScen = gList.length ? gList[0][0] : '';
@@ -2152,7 +2167,7 @@ async function renderScenAnalysis(sessions) {
   });
   const sc = (s) => s.quality !== 'suspect' && s.predicted != null && !s.sc.rapid;
   let html = `<h2>練成の分析</h2><div class="ana-filters">
-    <select id="anaShooter"><option value="*">練成者：全員</option>${shooters.map(n => `<option value="${escHtml(n)}" ${n === anaShooter ? 'selected' : ''}>${n ? escHtml(n) : '（未設定）'}</option>`).join('')}</select>
+    <select id="anaShooter"><option value="*">練成者：全員</option>${shooters.map(n => `<option value="${escHtml(n)}" ${n === anaShooter ? 'selected' : ''}>${n ? escHtml(sname.get(n)) : '（未設定）'}</option>`).join('')}</select>
     <select id="anaScen">${gList.map(([k, g]) => `<option value="${escHtml(k)}" ${k === anaScen ? 'selected' : ''}>${escHtml(g.label)}</option>`).join('')}</select></div>`;
   if (!ds.length) { el.innerHTML = html + '<p class="hint">該当する記録がありません。</p>'; bindAna(); return; }
   html += `<p class="hint" style="margin:0 0 4px">${runs.length}回の練成・${ds.length}発（全セッション）。点をタップすると値を表示します。</p>`;
@@ -2306,8 +2321,8 @@ function fixT0() {
 // 時間がかかり、共有(navigator.share)を呼ぶ頃にはタップ直後の「ユーザー操作」の有効期限が切れて拒否される
 // ためと考えられる。そこでCSVの作成（準備）と共有を分け、共有は専用ボタンのタップ直後に行う。
 let pendingExport = null; // {name, text, mime}
-function openExportSheet(name, text, note) {
-  pendingExport = { name, text, mime: 'text/csv' };
+function openExportSheet(name, text, note, mime) {
+  pendingExport = { name, text, mime: mime || 'text/csv' };
   $('exName').textContent = name; $('exNote').textContent = note + `（${(text.length / 1024).toFixed(0)}KB）`; $('exMsg').textContent = '';
   $('exportSheet').classList.add('open');
 }
@@ -2342,6 +2357,76 @@ async function getRaw(shot, chunkCache) {
   pts.forEach(([tt, v], i) => { raw.rt[i] = tt - shot.t0Abs; raw.gx[i] = v[0]; raw.gy[i] = v[1]; raw.gz[i] = v[2]; raw.ax[i] = v[3]; raw.ay[i] = v[4]; raw.az[i] = v[5]; });
   return raw;
 }
+// ---- MaSaL交換形式（masal-exchange v1）の書き出し ----
+// MaLI・MaCoの記録をMaSaL（Marksmanship Synthesis & Analysis Lab）で部隊単位に統合するための共通形式。
+// 射手は記号（code）で結び付け、氏名・所属を添える。波形・軌跡などの生データは含めない（要約と発ごとの結果のみ）。
+// 記録の単位：練成1回＝type 'drill'、練成モード以外の発（自由練成）＝セッション・射手ごとに type 'free'。
+const r3 = (v, d) => typeof v === 'number' && isFinite(v) ? +v.toFixed(d == null ? 3 : d) : null;
+function masalShooter(s) { return { code: s.shooterCode || '', name: s.shooter || '', unit: s.shooterUnit || '' }; }
+function masalCondition(gun, scen) {
+  const gp = gunProfile(gun);
+  return { weapon: gp.mode === 'gbb' ? 'gbb' : 'dry', gun: gp.label, scenario: scen, rangesM: null, night: null };
+}
+function masalShot(s) {
+  const q = s.quad, gk = guideKeyOf(s), sev = q && q.angle != null ? severityOf(q.magnitude, gunProfile(s.gun).sev, (gunProfile(s.gun).quad || {}).min) : null;
+  const o = { n: s.sc ? s.sc.rep : s.no, at: new Date(s.wall).toISOString(), score: r3(s.predicted, 1), band: s.band || null, quality: s.quality || 'ok',
+    cause: { key: gk, label: causeKey(s), severity: sev, magnitudeDeg: q ? r3(q.magnitude, 2) : null, angleDeg: q && q.angle != null ? r3(q.angle, 0) : null },
+    cantDeg: r3(s.cant, 1), method: s.method, ref: s.mantis != null ? { score: s.mantis, cause: s.cause === 'その他（自由入力）' ? s.causeFree : (s.cause || '') } : null };
+  if (s.sc) Object.assign(o, { tS: r3(s.sc.react / 1000), splitS: s.sc.split != null ? r3(s.sc.split / 1000) : null, target: s.sc.target, late: !!s.sc.late,
+    rapid: !!s.sc.rapid, extra: !!s.sc.extra });
+  return o;
+}
+function masalRecords(sess, list) {
+  const out = [], live = list.filter(s => !s.deleted).sort((a, b) => a.no - b.no);
+  const runs = sess.runs || [], runIds = [...new Set(live.filter(s => s.sc).map(s => s.sc.run).concat(runs.map(r => r.run)))].sort((a, b) => a - b);
+  runIds.forEach(id => {
+    const meta = runs.find(r => r.run === id), ss = live.filter(s => s.sc && s.sc.run === id);
+    const cfg = (meta && meta.cfg) || scenCfg(ss.length ? ss[0].sc : { key: meta.key }); if (!cfg) return;
+    const main = ss.filter(s => !s.sc.extra), first = ss[0] || {}, scen = { key: (meta && meta.key) || (first.sc && first.sc.key), label: cfg.label, type: cfg.type === 'string' ? 'string' : 'repeat' };
+    let summary;
+    if (cfg.type === 'string') {
+      const m = stringMetrics(main, cfg, meta && meta.actions), ok = main.filter(s => !s.sc.late && !s.sc.rapid && s.quality !== 'suspect' && s.predicted != null);
+      summary = { shots: main.length, plannedShots: cfg.shots, scoreMean: ok.length ? r3(mean(ok.map(s => s.predicted)), 1) : null,
+        firstS: m ? r3(m.first) : null, splitS: m ? r3(m.split) : null, totalS: m ? r3(m.total) : null, reloadS: m ? r3(m.reload) : null, reloadMeasured: m ? m.reloadMeasured : false,
+        malfunctionS: m && m.mal ? r3(m.mal) : null, goals: cfg.goals || null, grades: m ? m.grade : null, slideS: cfg.slideS || null };
+    } else {
+      const st = scenStats(main, (meta && meta.reps) || cfg.reps);
+      summary = { reps: st.reps, shots: st.shot, inTime: st.inTime, scoreMean: r3(st.mean, 1), reactMeanS: st.reactMean != null ? r3(st.reactMean / 1000) : null,
+        reactMaxS: st.reactMax != null ? r3(st.reactMax / 1000) : null, cantMaxDeg: r3(st.cantMax, 1), parS: r3(cfg.parMs / 1000), restS: r3(cfg.restMs / 1000) };
+    }
+    out.push({ id: `MaCo:${sess.id}:${id}`, app: 'MaCo', type: 'drill', shooter: masalShooter(first.sc ? first : sess), start: new Date(id).toISOString(),
+      eventName: '', eventDate: new Date(id).toISOString().slice(0, 10), condition: masalCondition(first.gun || sess.gun, scen), aborted: !!(meta && meta.aborted),
+      audioDelayMs: cfg.audioDelayMs || 0, summary, shots: ss.map(masalShot),
+      actions: ((meta && meta.actions) || []).map(a => ({ type: a.type, startS: r3(a.start / 1000), durS: r3(a.dur / 1000) })) });
+  });
+  // 練成モード以外の発：射手・銃種ごとに1件
+  const free = live.filter(s => !s.sc), groups = new Map();
+  free.forEach(s => { const k = (s.shooterCode || s.shooter || '') + '|' + s.gun; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(s); });
+  groups.forEach((ss, k) => {
+    const ok = ss.filter(s => s.quality !== 'suspect' && s.predicted != null), sm = summarize(ok), causes = {};
+    ok.filter(s => s.band !== '高').forEach(s => { const g = guideKeyOf(s); if (g) causes[g] = (causes[g] || 0) + 1; });
+    out.push({ id: `MaCo:${sess.id}:free:${k}`, app: 'MaCo', type: 'free', shooter: masalShooter(ss[0]), start: new Date(ss[0].wall).toISOString(),
+      eventName: '', eventDate: new Date(ss[0].wall).toISOString().slice(0, 10), condition: masalCondition(ss[0].gun, { key: 'free', label: '自由練成', type: 'free' }),
+      summary: { shots: ss.length, scored: ok.length, suspect: ss.length - ok.length, scoreMean: ok.length ? r3(sm.mean, 1) : null, scoreSd: ok.length > 1 ? r3(sm.sd, 1) : null,
+        bands: { high: sm.hi, mid: sm.mid, low: sm.lo }, causeCounts: causes, cantMeanDeg: r3(mean(ok.filter(s => s.cant != null).map(s => s.cant)), 1) },
+      shots: ss.map(masalShot), actions: [] });
+  });
+  return out;
+}
+async function exportMasal(allSessions) {
+  try {
+    const sessions = await loadSessions(); const map = new Map(((await DB.getAll('shots')) || []).map(s => [s.key, s])); shots.forEach(s => map.set(s.key, s));
+    const target = allSessions ? sessions : sessions.filter(s => s.id === reviewSessionId);
+    const records = [];
+    target.forEach(ss => { const sess = (session && ss.id === session.id) ? session : ss; records.push(...masalRecords(sess, [...map.values()].filter(s => s.sessionId === ss.id))); });
+    if (!records.length) { alert('書き出せる記録がありません。'); return; }
+    const shooters = [], seen = new Set();
+    records.forEach(r => { const k = r.shooter.code || r.shooter.name; if (!seen.has(k)) { seen.add(k); shooters.push(r.shooter); } });
+    const payload = { format: 'masal-exchange', version: 1, source: { app: 'MaCo', appVersion: MACO_VERSION, exportedAt: new Date().toISOString() }, shooters, records };
+    const text = JSON.stringify(payload), d = new Date().toISOString().slice(0, 10);
+    openExportSheet(`masal_MaCo_${allSessions ? 'all' : reviewSessionId}_${d}.json`, text, `${records.length}件（練成${records.filter(r => r.type === 'drill').length}・自由練成${records.filter(r => r.type === 'free').length}）・射手${shooters.length}名`, 'application/json');
+  } catch (e) { alert('MaSaL形式の作成に失敗しました: ' + (e && e.message)); }
+}
 async function exportCsv() {
   const sid = reviewSessionId; if (sid == null) return;
   $('exMsg') && ($('btnExportCsv').textContent = '準備中…');
@@ -2349,7 +2434,7 @@ async function exportCsv() {
     const all = ((session && sid === session.id) ? shots : ((await DB.byIndex('shots', 'sessionId', sid)) || [])).filter(s => !s.deleted).sort((a, b) => a.no - b.no);
     if (!all.length) { alert('出力できるショットがありません。'); return; }
     const b0 = all[0].bias || { gx: 0, gy: 0, gz: 0 }; const cache = {};
-    const header = 'No,時刻,検知方式,Mantisスコア,予測スコア,予測誤差,低下原因,最大ブレdps,ブレ量D,反動予期ヒント,フォロー減衰比,突き出しヒント,直前1秒spreadX,方向判定カテゴリ,方向判定角度deg,軌跡X,軌跡Y,軌跡t_ms,波形GyroX,波形GyroY,波形GyroZ,波形AccelX,波形AccelY,波形AccelZ,予測帯,判定低下要因,検知品質,撃発前最大dps,撃発後最大dps,銃種,傾きdeg,練成シナリオ,回,的,反応時間ms,時間内,練成者,間隔ms\n';
+    const header = 'No,時刻,検知方式,Mantisスコア,予測スコア,予測誤差,低下原因,最大ブレdps,ブレ量D,反動予期ヒント,フォロー減衰比,突き出しヒント,直前1秒spreadX,方向判定カテゴリ,方向判定角度deg,軌跡X,軌跡Y,軌跡t_ms,波形GyroX,波形GyroY,波形GyroZ,波形AccelX,波形AccelY,波形AccelZ,予測帯,判定低下要因,検知品質,撃発前最大dps,撃発後最大dps,銃種,傾きdeg,練成シナリオ,回,的,反応時間ms,時間内,練成者,間隔ms,記号,所属\n';
     const rows = []; let skipped = 0;
     for (const s of all) {
       const raw = await getRaw(s, cache); if (!raw) { skipped++; continue; }
@@ -2365,7 +2450,7 @@ async function exportCsv() {
         `"${j(samples, p => p.ax, 3)}"`, `"${j(samples, p => p.ay, 3)}"`, `"${j(samples, p => p.az, 3)}"`, bandOf(a.predicted, settings) || '',
         causeText(Object.assign({}, s, { band: bandOf(a.predicted, settings), quad: q })), s.quality === 'suspect' ? '要確認' : '通常',
         s.preMax != null ? s.preMax.toFixed(0) : '', s.postMax != null ? s.postMax.toFixed(0) : '', gunProfile(s.gun).label,
-        s.cant != null ? s.cant.toFixed(2) : '', s.sc && scenCfg(s.sc) ? scenCfg(s.sc).short.replace(/[,"]/g, ' ') : '', s.sc ? s.sc.rep : '', s.sc ? s.sc.target : '', s.sc ? s.sc.react : '', s.sc ? (s.sc.late ? '時間外' : '時間内') : '', (s.shooter || '').replace(/[,"]/g, ' '), s.sc && s.sc.split != null ? s.sc.split : ''].join(','));
+        s.cant != null ? s.cant.toFixed(2) : '', s.sc && scenCfg(s.sc) ? scenCfg(s.sc).short.replace(/[,"]/g, ' ') : '', s.sc ? s.sc.rep : '', s.sc ? s.sc.target : '', s.sc ? s.sc.react : '', s.sc ? (s.sc.late ? '時間外' : '時間内') : '', (s.shooter || '').replace(/[,"]/g, ' '), s.sc && s.sc.split != null ? s.sc.split : '', (s.shooterCode || '').replace(/[,"]/g, ' '), (s.shooterUnit || '').replace(/[,"]/g, ' ')].join(','));
     }
     if (!rows.length) { alert('生波形が見つからず、CSVを作れませんでした。\n保存状況：ショット' + all.length + '件、生波形あり0件。\n「設定」で連続生データを保存しておくと、生波形から再構築できます。'); return; }
     const bias = `# 静止バイアス(dps): GyroX=${b0.gx.toFixed(3)}, GyroY=${b0.gy.toFixed(3)}, GyroZ=${b0.gz.toFixed(3)}\n`;
@@ -2493,11 +2578,35 @@ $('btnTestVoice').onclick = () => speak('92点です。1コ的、終了です。
 ['actReload', 'actMal'].forEach(id => { const el = $(id), ty = el.dataset.type;
   el.addEventListener('pointerdown', e => actStart(ty, e)); ['pointerup', 'pointercancel', 'pointerleave'].forEach(n => el.addEventListener(n, e => actEnd(ty, e)));
   el.addEventListener('contextmenu', e => e.preventDefault()); });
-$('shooterInput').onchange = () => { settings.shooter = $('shooterInput').value.trim(); saveSettings(); if (session) { session.shooter = settings.shooter; if (session.persisted) persistSession(); } renderGun(); };
+function applyShooter() {
+  settings.shooter = $('shooterInput').value.trim(); settings.shooterCode = $('shooterCodeInput').value.trim(); settings.shooterUnit = $('shooterUnitInput').value.trim(); saveSettings();
+  if (session) { Object.assign(session, { shooter: settings.shooter, shooterCode: settings.shooterCode, shooterUnit: settings.shooterUnit }); if (session.persisted) persistSession(); }
+  renderGun();
+}
+['shooterInput', 'shooterCodeInput', 'shooterUnitInput'].forEach(id => $(id).onchange = applyShooter);
+// 名簿（MaLIの設定ファイル：{unitId, roster:[{code,name,unit}]}）から練成者を選ぶ
+let roster = [];
+try { const r = JSON.parse(lsGet('maco_roster') || '[]'); if (Array.isArray(r)) roster = r; } catch (e) {}
+function renderRoster() {
+  const sel = $('rosterSel'); sel.style.display = roster.length ? '' : 'none';
+  sel.innerHTML = '<option value="">名簿から選ぶ</option>' + roster.map((r, i) => `<option value="${i}">${escHtml([r.code, r.name, r.unit].filter(Boolean).join('　'))}</option>`).join('');
+  $('rosterStatus').textContent = roster.length ? `名簿 ${roster.length}名` : '';
+}
+$('rosterSel').onchange = (e) => { const r = roster[+e.target.value]; if (!r) return;
+  $('shooterCodeInput').value = r.code || ''; $('shooterInput').value = r.name || ''; $('shooterUnitInput').value = r.unit || ''; applyShooter(); e.target.value = ''; };
+$('btnRosterLoad').onclick = () => $('rosterFile').click();
+$('rosterFile').onchange = (e) => {
+  const f = e.target.files[0]; if (!f) return; const rd = new FileReader();
+  rd.onload = () => { try { const c = JSON.parse(rd.result), list = c.roster || (c.trainingConfig && c.trainingConfig.roster) || [], def = c.unitId || (c.trainingConfig && c.trainingConfig.unitId) || '';
+      roster = list.filter(r => r && r.name).map(r => ({ code: r.code || '', name: r.name, unit: r.unit || def })); lsSet('maco_roster', JSON.stringify(roster)); renderRoster();
+    } catch (err) { $('rosterStatus').textContent = '名簿を読み込めませんでした（MaLIの設定ファイルを選んでください）'; } e.target.value = ''; };
+  rd.readAsText(f);
+};
 $('btnScen').onclick = () => { if (scenRun) finishScenario(true); else startScenario(); };
 $('btnResetSettings').onclick = () => { if (!confirm('設定を初期値に戻します。')) return; settings = Object.assign({}, DEFAULTS); saveSettings(); det.p = settings; det.mode = 'dry'; if (session) session.gun = settings.gun; renderSettings(); renderGun(); };
 $('selSession').onchange = (e) => { reviewSessionId = Number(e.target.value); renderReview(); };
-$('btnExportCsv').onclick = exportCsv; $('btnExportRaw').onclick = exportRaw;
+$('btnExportCsv').onclick = exportCsv;
+$('btnMasalOne').onclick = () => exportMasal(false); $('btnMasalAll').onclick = () => exportMasal(true); $('btnExportRaw').onclick = exportRaw;
 $('exShare').onclick = doShare; $('exCopy').onclick = doCopy; $('exDl').onclick = doDownload;
 $('exClose').onclick = () => { $('exportSheet').classList.remove('open'); pendingExport = null; };
 $('dtClose').onclick = () => { $('detailSheet').classList.remove('open'); detail = null; };
@@ -2510,7 +2619,7 @@ $('pkM10').onclick = () => nudge(-10); $('pkP10').onclick = () => nudge(10); $('
 $('pkOK').onclick = () => { if (!pk) return; const cb = pk.onOK, sel = pk.sel; closePicker(); cb(sel); };
 
 function renderGun() {
-  $('gunTag').textContent = gunProfile(settings.gun).label + (settings.shooter ? '・' + settings.shooter : '');
+  $('gunTag').textContent = gunProfile(settings.gun).label + (settings.shooter || settings.shooterCode ? '・' + (settings.shooter || settings.shooterCode) : '');
 }
 function showIdle() {
   $('resScore').textContent = '--'; $('resBand').textContent = '–'; $('resBand').className = 'band'; $('hero').className = 'hero';
@@ -2522,7 +2631,7 @@ function showIdle() {
   await DB.open();
   makeDetector(); newSession(); reviewSessionId = session.id;
   onDetState('ARMED', {}); showIdle(); renderStrip(); renderCalib(); updateBanner(); renderSettings(); renderGun();
-  renderScenSelect(); renderCustomList(); renderScenBar(); $('shooterInput').value = settings.shooter || '';
+  renderScenSelect(); renderCustomList(); renderScenBar(); $('shooterInput').value = settings.shooter || ''; $('shooterCodeInput').value = settings.shooterCode || ''; $('shooterUnitInput').value = settings.shooterUnit || ''; renderRoster();
   if (!('bluetooth' in navigator)) $('btnConnect').title = 'Web Bluetooth対応ブラウザ（Bluefy等）で開いてください';
 })();
 </script>
