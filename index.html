@@ -371,7 +371,7 @@
 // =========================================================
 
 // ==CORE_BEGIN==
-const MACO_VERSION = 'MaCo錬成 2026-10-26';
+const MACO_VERSION = 'MaCo錬成 2026-10-26b';
 // ---- 設定の既定値（検知パラメータは既存の328件の波形で検証した値） ----
 const DEFAULTS = {
   thr: 0.08,        // 撃発候補：加速度差分(G/サンプル)のしきい値
@@ -1333,6 +1333,63 @@ const $ = (id) => document.getElementById(id);
 const SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
 const CHAR_UUID    = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
 const PACKET_SIZE = 28;
+// =========================================================
+// 受信データの間引き（2026-10-26 追加：ファーム 400Hz・±16G 対応）
+// 新しいファームは1回の通知に28バイトのサンプルを最大4個入れて400Hzで送る（旧ファームは1個・約100Hz）。
+// 撃発の検知・採点・低下要因は100Hzのデータで作ったため、受信周期を時刻の間隔から求め、
+// 100Hzになるよう連続するサンプルを平均して渡す（400Hz→4個ずつ平均）。旧ファーム（約100Hz）はそのまま渡す。
+// 周期は接続ごとに最初の16サンプルで決める（決まるまでの数サンプルは保留し、決まった時点で順に渡す）。
+// 平均の途中で欠落（間隔が通常の1.5倍超）があれば、それまでの分だけで平均する。
+// =========================================================
+const DECIM_TARGET_MS = 10;
+function decimAvg(list) {
+  if (list.length === 1) return list[0];
+  const o = { t: 0, gx: 0, gy: 0, gz: 0, ax: 0, ay: 0, az: 0 }, n = list.length;
+  list.forEach(s => { o.t += s.t; o.gx += s.gx; o.gy += s.gy; o.gz += s.gz; o.ax += s.ax; o.ay += s.ay; o.az += s.az; });
+  for (const k in o) o[k] /= n; return o;
+}
+class Decimator {
+  constructor() { this.reset(); }
+  reset() { this.factor = null; this.dtMean = null; this.lastT = null; this.dts = []; this.hold = []; this.buf = []; }
+  hz() { return this.dtMean ? Math.round(1000 / this.dtMean) : null; }
+  // 受信1サンプル → 100Hzのサンプルの配列（0個以上）
+  push(s) {
+    if (this.lastT != null && s.t < this.lastT - 1000) this.reset(); // デバイスの再起動等
+    if (this.lastT != null) { const dt = s.t - this.lastT; if (dt >= 0 && dt < 50) this.dts.push(dt); }
+    this.lastT = s.t;
+    if (this.factor == null) {
+      this.hold.push(s);
+      if (this.dts.length < 16) return [];
+      this.dtMean = this.dts.reduce((a, b) => a + b, 0) / this.dts.length;
+      this.factor = Math.max(1, Math.round(DECIM_TARGET_MS / Math.max(this.dtMean, 0.5)));
+      const held = this.hold; this.hold = []; const out = [];
+      held.forEach(x => this.feed(x, out)); return out;
+    }
+    const out = []; this.feed(s, out); return out;
+  }
+  feed(s, out) {
+    if (this.factor === 1) { out.push(s); return; }
+    if (this.buf.length && s.t - this.buf[this.buf.length - 1].t > this.dtMean * 1.5 + 1) { out.push(decimAvg(this.buf)); this.buf = []; }
+    this.buf.push(s);
+    if (this.buf.length >= this.factor) { out.push(decimAvg(this.buf)); this.buf = []; }
+  }
+}
+// 保存済みの高周期データ（[{t,gx,..}]、時刻順）を100Hzに間引く（受信時と同じ平均）
+function decimateList(list, factor) {
+  if (!factor || factor <= 1) return list;
+  const d = new Decimator(); d.factor = factor;
+  const dts = []; for (let i = 1; i < list.length && dts.length < 64; i++) { const dt = list[i].t - list[i - 1].t; if (dt >= 0 && dt < 50) dts.push(dt); }
+  d.dtMean = dts.length ? dts.reduce((a, b) => a + b, 0) / dts.length : DECIM_TARGET_MS / factor;
+  const out = []; list.forEach(s => d.feed(s, out)); if (d.buf.length) out.push(decimAvg(d.buf)); return out;
+}
+// BLEの通知（28バイト×n個）をサンプルの配列にする
+function parsePackets(dv) {
+  const out = [];
+  for (let o = 0; o + 28 <= dv.byteLength; o += 28)
+    out.push({ t: dv.getUint32(o, true), gx: dv.getFloat32(o + 4, true), gy: dv.getFloat32(o + 8, true), gz: dv.getFloat32(o + 12, true),
+               ax: dv.getFloat32(o + 16, true), ay: dv.getFloat32(o + 20, true), az: dv.getFloat32(o + 24, true) });
+  return out;
+}
 
 // ---- 設定の保存（localStorage。使えない環境ではメモリのみ） ----
 let settings = Object.assign({}, DEFAULTS);
@@ -1470,7 +1527,7 @@ function finalizeShot(t0, method = 'auto', meta) {
     t0Abs: t0, t0Rel: 0, predicted: a.predicted, band, quad: a.quad,
     quality: (meta && meta.quality) || 'ok', preMax: meta && meta.preMax != null ? meta.preMax : null, postMax: meta && meta.postMax != null ? meta.postMax : null, mantis: null, cause: '', causeFree: '', deleted: false,
     bias: Object.assign({}, det.bias), rawReady: false, gun: settings.gun, shooter: settings.shooter || '', shooterCode: settings.shooterCode || '', shooterUnit: settings.shooterUnit || '',
-    cant: cantOf(ws, t0, settings.cantZero), sc,
+    cant: cantOf(ws, t0, settings.cantZero), sc, srcHz: decim.hz(),
   };
   shots.push(shot);
   lastShotShown = shot;
@@ -1986,19 +2043,23 @@ async function connectBle() {
 function setConnected(c) {
   connected = c; $('connDot').classList.toggle('on', c);
   $('btnConnect').textContent = c ? '接続中' : 'BLE接続'; $('btnConnect').disabled = c; $('btnConnect').classList.toggle('on', c);
-  if (c) { det.hardReset(); lastLiveDraw = 0; }
+  if (c) { det.hardReset(); decim.reset(); lastLiveDraw = 0; }
   if (!c && scenRun) finishScenario(true);
   onDetState(det.state, {}); updateBanner(); renderScenBar();
 }
+const decim = new Decimator();   // 受信周期→100Hz（旧ファームはそのまま）
 function onImu(ev) {
   const dv = ev.target.value; if (dv.byteLength < PACKET_SIZE) return;
-  const raw = { t: dv.getUint32(0, true), gx: dv.getFloat32(4, true), gy: dv.getFloat32(8, true), gz: dv.getFloat32(12, true),
-                ax: dv.getFloat32(16, true), ay: dv.getFloat32(20, true), az: dv.getFloat32(24, true) };
-  updateClock(raw.t);
+  parsePackets(dv).forEach(raw => {
+    updateClock(raw.t);
+    if (settings.rawRecord) { rawBuf.push(raw); if (rawBuf.length >= 3000 * (decim.factor || 1)) flushRaw(); } // 連続生データは受信した周期のまま保存
+    decim.push(raw).forEach(onSample);
+  });
+}
+function onSample(raw) {
   const s = det.push(raw);
   updateLiveTraj(s);
   if (!scenRun && s.t - lastCantDraw >= 200) { lastCantDraw = s.t; renderScenBar(); }
-  if (settings.rawRecord) { rawBuf.push(raw); if (rawBuf.length >= 3000) flushRaw(); }
 }
 async function flushRaw() {
   if (!rawBuf.length || !session) return;
@@ -2006,7 +2067,7 @@ async function flushRaw() {
   rawBuf.forEach((r, i) => { t[i] = r.t; v[i * 6] = r.gx; v[i * 6 + 1] = r.gy; v[i * 6 + 2] = r.gz; v[i * 6 + 3] = r.ax; v[i * 6 + 4] = r.ay; v[i * 6 + 5] = r.az; });
   rawBuf = []; const idx = rawChunkIdx++;
   if (!session.persisted) await persistSession();
-  await DB.put('chunks', { key: session.id + ':' + idx, sessionId: session.id, idx, t, v });
+  await DB.put('chunks', { key: session.id + ':' + idx, sessionId: session.id, idx, t, v, factor: decim.factor || 1, hz: decim.hz() });
   await DB.put('sessions', { id: session.id, start: session.start, count: session.count, gun: session.gun, bias: session.bias, rawChunks: rawChunkIdx, runs: session.runs || [], shooter: session.shooter || '', shooterCode: session.shooterCode || '', shooterUnit: session.shooterUnit || '' });
 }
 
@@ -2384,7 +2445,11 @@ async function getRaw(shot, chunkCache) {
   if (!chunkCache.list) chunkCache.list = ((await DB.byIndex('chunks', 'sessionId', shot.sessionId)) || []).sort((a, b) => a.idx - b.idx);
   const a = shot.t0Abs - RAW_PRE_MS, b = shot.t0Abs + RAW_POST_MS; const pts = [];
   chunkCache.list.forEach(c => { if (c.t[0] > b || c.t[c.t.length - 1] < a) return; for (let i = 0; i < c.t.length; i++) if (c.t[i] >= a && c.t[i] <= b) pts.push([c.t[i], c.v.subarray(i * 6, i * 6 + 6)]); });
-  if (pts.length < 100) return null; const n = pts.length;
+  if (pts.length < 100) return null;
+  // 400Hzで保存した連続生データは、受信時と同じく100Hzに間引いてから使う
+  const fac = (chunkCache.list.find(c => c.factor) || {}).factor || 1;
+  if (fac > 1) { const dl = decimateList(pts.map(([tt, v]) => ({ t: tt, gx: v[0], gy: v[1], gz: v[2], ax: v[3], ay: v[4], az: v[5] })), fac); pts.length = 0; dl.forEach(o => pts.push([o.t, [o.gx, o.gy, o.gz, o.ax, o.ay, o.az]])); }
+  const n = pts.length;
   const raw = { rt: new Float32Array(n), gx: new Float32Array(n), gy: new Float32Array(n), gz: new Float32Array(n), ax: new Float32Array(n), ay: new Float32Array(n), az: new Float32Array(n), bias: shot.bias };
   pts.forEach(([tt, v], i) => { raw.rt[i] = tt - shot.t0Abs; raw.gx[i] = v[0]; raw.gy[i] = v[1]; raw.gz[i] = v[2]; raw.ax[i] = v[3]; raw.ay[i] = v[4]; raw.az[i] = v[5]; });
   return raw;
@@ -2466,7 +2531,7 @@ async function exportCsv() {
     const all = ((session && sid === session.id) ? shots : ((await DB.byIndex('shots', 'sessionId', sid)) || [])).filter(s => !s.deleted).sort((a, b) => a.no - b.no);
     if (!all.length) { alert('出力できるショットがありません。'); return; }
     const b0 = all[0].bias || { gx: 0, gy: 0, gz: 0 }; const cache = {};
-    const header = 'No,時刻,検知方式,Mantisスコア,予測スコア,予測誤差,低下原因,最大ブレdps,ブレ量D,反動予期ヒント,フォロー減衰比,突き出しヒント,直前1秒spreadX,方向判定カテゴリ,方向判定角度deg,軌跡X,軌跡Y,軌跡t_ms,波形GyroX,波形GyroY,波形GyroZ,波形AccelX,波形AccelY,波形AccelZ,予測帯,判定低下要因,検知品質,撃発前最大dps,撃発後最大dps,銃種,傾きdeg,練成シナリオ,回,的,反応時間ms,時間内,練成者,間隔ms,記号,所属\n';
+    const header = 'No,時刻,検知方式,Mantisスコア,予測スコア,予測誤差,低下原因,最大ブレdps,ブレ量D,反動予期ヒント,フォロー減衰比,突き出しヒント,直前1秒spreadX,方向判定カテゴリ,方向判定角度deg,軌跡X,軌跡Y,軌跡t_ms,波形GyroX,波形GyroY,波形GyroZ,波形AccelX,波形AccelY,波形AccelZ,予測帯,判定低下要因,検知品質,撃発前最大dps,撃発後最大dps,銃種,傾きdeg,練成シナリオ,回,的,反応時間ms,時間内,練成者,間隔ms,記号,所属,受信Hz\n';
     const rows = []; let skipped = 0;
     for (const s of all) {
       const raw = await getRaw(s, cache); if (!raw) { skipped++; continue; }
@@ -2482,7 +2547,7 @@ async function exportCsv() {
         `"${j(samples, p => p.ax, 3)}"`, `"${j(samples, p => p.ay, 3)}"`, `"${j(samples, p => p.az, 3)}"`, bandOf(a.predicted, settings) || '',
         causeText(Object.assign({}, s, { band: bandOf(a.predicted, settings), quad: q })), s.quality === 'suspect' ? '要確認' : '通常',
         s.preMax != null ? s.preMax.toFixed(0) : '', s.postMax != null ? s.postMax.toFixed(0) : '', gunProfile(s.gun).label,
-        s.cant != null ? s.cant.toFixed(2) : '', s.sc && scenCfg(s.sc) ? scenCfg(s.sc).short.replace(/[,"]/g, ' ') : '', s.sc ? s.sc.rep : '', s.sc ? s.sc.target : '', s.sc ? s.sc.react : '', s.sc ? (s.sc.late ? '時間外' : '時間内') : '', (s.shooter || '').replace(/[,"]/g, ' '), s.sc && s.sc.split != null ? s.sc.split : '', (s.shooterCode || '').replace(/[,"]/g, ' '), (s.shooterUnit || '').replace(/[,"]/g, ' ')].join(','));
+        s.cant != null ? s.cant.toFixed(2) : '', s.sc && scenCfg(s.sc) ? scenCfg(s.sc).short.replace(/[,"]/g, ' ') : '', s.sc ? s.sc.rep : '', s.sc ? s.sc.target : '', s.sc ? s.sc.react : '', s.sc ? (s.sc.late ? '時間外' : '時間内') : '', (s.shooter || '').replace(/[,"]/g, ' '), s.sc && s.sc.split != null ? s.sc.split : '', (s.shooterCode || '').replace(/[,"]/g, ' '), (s.shooterUnit || '').replace(/[,"]/g, ' '), s.srcHz || ''].join(','));
     }
     if (!rows.length) { alert('生波形が見つからず、CSVを作れませんでした。\n保存状況：ショット' + all.length + '件、生波形あり0件。\n「設定」で連続生データを保存しておくと、生波形から再構築できます。'); return; }
     const bias = `# 静止バイアス(dps): GyroX=${b0.gx.toFixed(3)}, GyroY=${b0.gy.toFixed(3)}, GyroZ=${b0.gz.toFixed(3)}, 版=${MACO_VERSION}\n`;
@@ -2497,16 +2562,18 @@ async function exportRaw() {
   if (!chunks.length) { alert('連続生データがありません。「設定」の「連続生データを保存」をオンにして錬成すると保存されます。'); return; }
   const parts = ['t_ms,gx,gy,gz,ax,ay,az\n'];
   chunks.forEach(c => { let s = ''; for (let i = 0; i < c.t.length; i++) s += c.t[i] + ',' + [0, 1, 2, 3, 4, 5].map(k => c.v[i * 6 + k].toFixed(4)).join(',') + '\n'; parts.push(s); });
-  const text = parts.join(''); const n = chunks.reduce((a, c) => a + c.t.length, 0);
-  openExportSheet(`maco_train_raw_${sid}.csv`, text, `連続生データ ${n}サンプル（約${Math.round(n / 100)}秒）`);
+  const text = parts.join(''); const n = chunks.reduce((a, c) => a + c.t.length, 0), hz = (chunks.find(c => c.hz) || {}).hz;
+  openExportSheet(`maco_train_raw_${sid}.csv`, text, `連続生データ ${n}サンプル（約${Math.round(rawSeconds(chunks))}秒${hz ? '・' + hz + 'Hz' : ''}）`);
 }
 // 保存状況の確認（振り返り画面に表示）
 async function renderStorageStatus(list, sid) {
   const raws = await Promise.all(list.map(s => DB.get('raws', s.key)));
   const withRaw = raws.filter(Boolean).length; const chunks = ((await DB.byIndex('chunks', 'sessionId', sid)) || []);
   const n = chunks.reduce((a, c) => a + c.t.length, 0);
-  $('storageStatus').textContent = `保存状況：ショット ${list.length}件（生波形あり ${withRaw}件）／連続生データ ${n ? Math.round(n / 100) + '秒' : 'なし'}`;
+  $('storageStatus').textContent = `保存状況：ショット ${list.length}件（生波形あり ${withRaw}件）／連続生データ ${n ? Math.round(rawSeconds(chunks)) + '秒' : 'なし'}`;
 }
+// 連続生データの秒数（周期によらず時刻から求める。旧データは100Hzのサンプル数と一致）
+function rawSeconds(chunks) { return chunks.reduce((a, c) => a + (c.t.length ? (c.t.length / (c.hz || 100)) : 0), 0); }
 
 // ---- 設定画面 ----
 const SET_SPEC = {
@@ -2585,7 +2652,8 @@ function renderDiag() {
   const fmt = (r) => `${new Date(r.wall).toLocaleTimeString('ja-JP')} ピーク${r.peak.toFixed(2)}G ／ 衝撃時${r.gmax.toFixed(0)}dps ／ 前${r.preMax != null ? r.preMax.toFixed(0) : '-'}dps 後${r.postMax != null ? r.postMax.toFixed(0) : '-'}dps ／ 幅${r.width}${r.holdMed != null ? ` ／ 保持${r.holdMed.toFixed(1)}dps` : ''}<br>　→ ${r.reason}`;
   el.innerHTML = `状態: ${connected ? STATE_LABEL[det.state] : '未接続'}　／　棄却した候補: ${det.rejected}件` +
     (rejectLog.length ? '<br>直近の棄却（新しい順）:<br>' + rejectLog.slice(0, 5).map(fmt).join('<br>') : '<br>棄却された候補はまだありません。') +
-    `<br>バッファ: ${det.buf.length}サンプル${settings.rawRecord ? '　／　連続記録中' : ''}`;
+    `<br>バッファ: ${det.buf.length}サンプル${settings.rawRecord ? '　／　連続記録中' : ''}` +
+    (decim.hz() ? `<br>受信: 約${decim.hz()}Hz${decim.factor > 1 ? `（${decim.factor}個ずつ平均して100Hzで検知・採点）` : ''}` : '');
 }
 
 // ---- タブ・ボタン ----
