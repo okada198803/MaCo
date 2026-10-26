@@ -302,6 +302,8 @@
       <button id="btnAddCustom" style="width:100%;margin-top:8px;">カスタム練成を追加</button>
       <p class="hint">1回＝開始ブザー → 射撃時間内に1発 → 終了ブザー → スライド操作時間（休止）。錬成画面上部の選択肢に「4」以降として表示されます。「設定を初期値に戻す」では消えません。</p></div>
     <div class="panel"><h2>記録・通知</h2><div id="setMisc"></div></div>
+    <div class="panel"><h2>アプリの版</h2><div class="hint" id="verStatus"></div>
+      <div class="sheet-btns"><button id="btnCheckVer">最新版を確認</button><button id="btnReloadVer">最新版を読み込み直す</button></div></div>
     <div class="panel"><h2>検知の診断</h2><div class="hint" id="diagText" style="font-size:12px;"></div></div>
     <button id="btnResetSettings" style="width:100%;">設定を初期値に戻す</button>
   </section>
@@ -369,7 +371,7 @@
 // =========================================================
 
 // ==CORE_BEGIN==
-const MACO_VERSION = 'MaCo錬成 2026-10-25';
+const MACO_VERSION = 'MaCo錬成 2026-10-26';
 // ---- 設定の既定値（検知パラメータは既存の328件の波形で検証した値） ----
 const DEFAULTS = {
   thr: 0.08,        // 撃発候補：加速度差分(G/サンプル)のしきい値
@@ -383,7 +385,8 @@ const DEFAULTS = {
   holdMin: 0.5,     // 照準の保持：同じ中央値がこの値未満なら手で保持していない（台に置いた状態等）とみなし撃発としない
   orientMax: 45,    // 銃の向き：重力方向が据銃時の向き（M5のZ軸）から この角度(deg)以上ずれていれば撃発とみなさない（置いた・横倒し等）
   mountUp: false,   // M5の取り付けの向き：false＝据銃時に az≈-1G（既存の取り付け）、true＝上下逆（az≈+1G）
-  holdRecent: 2.6,  // 照準の保持：3秒の中央値がholdMax以上でも、直前1秒(-1000〜-150ms)の中央値がこの値未満なら棄却せず「要確認」（据銃直後の撃発）
+  holdRecent: 2.6,
+  gbbPeakMin: 0.5,  // GBB：撃発の衝撃（加速度差分の最大、G）がこれ未満ならスライドが十分に動いていない（ガス不足・弾切れ等）とみなし撃発としない  // 照準の保持：3秒の中央値がholdMax以上でも、直前1秒(-1000〜-150ms)の中央値がこの値未満なら棄却せず「要確認」（据銃直後の撃発）
   slideG: 100,      // スライド操作とみなす合成角速度(dps)。撃発後300〜500msの最大は27dps
   slideD: 0.3,      // スライド操作とみなす加速度差分(G/サンプル)。撃発後300〜500msの最大は0.13
   quietG: 30,       // 静止とみなす合成角速度(dps)
@@ -411,6 +414,7 @@ const DEFAULTS = {
   scenSlideS: 1.5,  // ドライの連続射撃：1発あたりのスライド操作の時間（MaLIの目標の射撃間隔・合計時間に加算）
   gbbRest1: 2,      // ガスブローバック時の1コ的の休止（秒。スライド操作が要らないため短縮）
   gbbRest3: 2,      // ガスブローバック時の3コ的の休止（秒）
+  cantZeroSrc: '',  // 傾きの0点の記録元：calib＝静止バイアスと同時（装着前・仮）、aim＝装着後に構えて記録（正式）
   scenLateMs: 1000, // 終了ブザー後、この時間内の撃発は「時間外」として記録（以降はスライド操作の時間とみなし記録しない）
   cantZero: 0,      // 傾き（カント）の0点（deg）。M5の取り付けの傾きを差し引く
   cantWarn: 3,      // 傾きの注意表示（deg、暫定）
@@ -1039,6 +1043,9 @@ class ShotDetector {
     const preMax = preFrom < t0 - 150 ? maxGm(preFrom, t0 - 150) : 0;
     const info = { t0, peak: pk, gmax: recoil, width: 0, preMax, postMax: recoil };
     if (recoil < GBB_RECOIL_DPS) { info.reason = '反動が小さい（GBBの撃発ではない可能性）'; this.reject(info, this.tFirst + 150); return; }
+    // 衝撃が弱い発（2026-10-26 GBB）：本物の撃発は 0.96〜4.8G（既存GBB 100発の最小0.96）、ガス不足・弾切れ等の弱い発は 0.14〜0.20G。
+    // 反動の角速度（130〜186dps）だけでは区別できない。採点（GBBモデル）も意味をなさないため撃発としない。
+    if (pk < p.gbbPeakMin) { info.reason = '衝撃が弱い（ガス不足・弾切れ等でスライドが十分に動いていない可能性）'; info.weak = true; info.inScen = scen; this.reject(info, this.lastT + 100); return; }
     if (preMax >= p.rejectPre && !scen) { info.reason = '撃発の前に大きな動きがある（持ち替え・装填等）'; this.reject(info, this.lastT + 100); return; }
     const oc = this.orientCheck(t0); if (oc) info.orientDev = oc.dev;
     if (oc && oc.reason) { info.reason = oc.reason; this.reject(info, this.lastT + 100); return; }
@@ -1397,7 +1404,7 @@ async function persistSession() {
 function makeDetector() {
   det = new ShotDetector(settings, {
     onState: onDetState, onShot: onDetShot, onScoreDue: (t0, it) => finalizeShot(t0, 'auto', it), onRawDue: fillRaw,
-    onReject: (r) => { lastReject = r; rejectLog.unshift(Object.assign({ wall: Date.now() }, r)); if (rejectLog.length > 8) rejectLog.pop(); renderDiag(); },
+    onReject: (r) => { lastReject = r; rejectLog.unshift(Object.assign({ wall: Date.now() }, r)); if (rejectLog.length > 8) rejectLog.pop(); renderDiag(); if (r.weak && r.inScen) noteWeak(); },
     inScenario: (t0) => scenInWindow(t0),
     rapid: () => !!(scenRun && scenRun.sc.type === 'string'),
   });
@@ -1937,6 +1944,14 @@ function renderScenBar() {
   else { const nx = tl.find(r => r.start > now); cls = 'rest'; txt = nx ? `次 第${nx.rep}発${tgt(nx)} ${((nx.start - now) / 1000).toFixed(1)}秒` : '集計中…'; }
   bar.className = 'scen-bar ' + cls; st.textContent = txt;
 }
+// 衝撃が弱い発を除外したことを知らせる（練成の制限時間内のみ・10秒に1回まで）。ガス不足の目安になる。
+// 制限時間外の弱い衝撃は持ち替え・操作の揺れが大半（1セッションで数十件）のため知らせない
+let lastWeakNote = 0;
+function noteWeak() {
+  const now = Date.now(); if (now - lastWeakNote < 10000) return; lastWeakNote = now;
+  $('resMeta').textContent = '衝撃が弱い発を除外しました（ガス不足・弾切れの可能性）。' + ($('resMeta').textContent ? '\n' + $('resMeta').textContent : '');
+  if (voiceOn()) speak('衝撃が弱い発がありました。ガスを確認してください。', false);
+}
 // 傾きの0点：押してから3秒後の1秒間（構えて静止した状態）の平均を記録する
 function recordCantZero() {
   if (!connected || !det || det.buf.length < 100) { alert('BLE接続してから押してください。'); return; }
@@ -1945,7 +1960,8 @@ function recordCantZero() {
     const lt = det.lastT, rc = det.window(lt - 1000, lt);
     if (rc.length < 50 || Math.max(...rc.map(s => s.gm)) > 20) { $('cantStatus').textContent = '動いているため記録しませんでした。もう一度押してください。'; return; }
     let sy = 0, sz = 0; rc.forEach(s => { sy += s.ay; sz += s.az; }); settings.cantZero = +rawCant(sy / rc.length, sz / rc.length).toFixed(2);
-    lsSet('maco_train_cantzero_at', String(Date.now())); saveSettings(); renderCantStatus();
+    settings.cantZeroSrc = 'aim'; lsSet('maco_train_cantzero_at', String(Date.now())); saveSettings(); renderCantStatus(); updateBanner();
+    if (voiceOn() || settings.voice !== 'off') speak('傾きの0点を記録しました。', true);
   }, 3000);
 }
 function renderCantStatus() {
@@ -2009,7 +2025,7 @@ function calibrate() {
   det.bias = bias; if (session) session.bias = Object.assign({}, bias);
   // 傾きの0点も同じ静止状態で記録する（置いた向きで0°。装着後に構えて合わせ直す場合は「傾きの0点を記録」）
   { let sy = 0, sz = 0; rc.forEach(s => { sy += s.ay; sz += s.az; });
-    if (rc[0].ay != null) { settings.cantZero = +rawCant(sy / rc.length, sz / rc.length).toFixed(2); lsSet('maco_train_cantzero_at', String(Date.now())); saveSettings(); renderCantStatus(); } }
+    if (rc[0].ay != null) { settings.cantZero = +rawCant(sy / rc.length, sz / rc.length).toFixed(2); settings.cantZeroSrc = 'calib'; lsSet('maco_train_cantzero_at', String(Date.now())); saveSettings(); renderCantStatus(); } }
   savedBias = { bias, at: Date.now() }; lsSet('maco_train_bias', JSON.stringify(savedBias));
   renderCalib(); updateBanner();
 }
@@ -2019,11 +2035,27 @@ function renderCalib() {
   const b = savedBias.bias; el.textContent = `記録済み（${new Date(savedBias.at).toLocaleString('ja-JP')}）：GyroX=${b.gx.toFixed(2)}, GyroY=${b.gy.toFixed(2)}, GyroZ=${b.gz.toFixed(2)} dps`;
 }
 function updateBanner() {
-  const el = $('banner'); let msg = '';
-  if (!savedBias) msg = '静止バイアスが未記録です。「設定」タブで、銃に装着する前に記録してください。';
+  const el = $('banner'); let msg = '', btn = '';
+  if (newerVersion) { msg = `新しい版（${newerVersion.replace('MaCo錬成 ', '')}）があります。`; btn = '<button id="bnUpdate" style="margin-left:6px;padding:3px 8px;font-size:11px;">更新</button>'; }
+  else if (!savedBias) msg = '静止バイアスが未記録です。「設定」タブで、銃に装着する前に記録してください。';
   else if (connected && Date.now() - savedBias.at > 12 * 3600 * 1000) msg = '静止バイアスの記録から12時間以上経っています。必要なら「設定」タブで再記録してください。';
-  el.style.display = msg ? 'block' : 'none'; el.textContent = msg;
+  else if (connected && settings.cantZeroSrc !== 'aim') { msg = '傾きの0点が装着前の値です。銃に装着して構え、記録してください。'; btn = '<button id="bnCant" style="margin-left:6px;padding:3px 8px;font-size:11px;">3秒後に記録</button>'; }
+  el.style.display = msg ? 'block' : 'none'; el.innerHTML = escHtml(msg) + btn;
+  if ($('bnUpdate')) $('bnUpdate').onclick = () => reloadLatest();
+  if ($('bnCant')) $('bnCant').onclick = () => { recordCantZero(); el.innerHTML = '3秒後に記録します。照準を正立させて構え、静止してください…'; };
 }
+// ---- 版の確認（Bluefy等で古い版がキャッシュされたまま使われるのを防ぐ）----
+let newerVersion = null;
+async function checkUpdate(manual) {
+  try {
+    const url = location.href.split('#')[0].split('?')[0];
+    const r = await fetch(url + '?v=' + Date.now(), { cache: 'no-store' }); if (!r.ok) throw new Error(r.status);
+    const m = (await r.text()).match(/const MACO_VERSION = '([^']+)'/); const latest = m ? m[1] : null;
+    newerVersion = latest && latest !== MACO_VERSION && latest > MACO_VERSION ? latest : null; updateBanner();
+    if (manual) $('verStatus').textContent = newerVersion ? `新しい版 ${newerVersion} があります。` : `最新です（${MACO_VERSION}）。`;
+  } catch (e) { if (manual) $('verStatus').textContent = '確認できませんでした（オフライン等）。'; }
+}
+function reloadLatest() { const url = location.href.split('#')[0].split('?')[0]; location.replace(url + '?v=' + Date.now()); }
 
 // ---- 手動追加（取りこぼし）----
 function manualAdd() {
@@ -2453,7 +2485,7 @@ async function exportCsv() {
         s.cant != null ? s.cant.toFixed(2) : '', s.sc && scenCfg(s.sc) ? scenCfg(s.sc).short.replace(/[,"]/g, ' ') : '', s.sc ? s.sc.rep : '', s.sc ? s.sc.target : '', s.sc ? s.sc.react : '', s.sc ? (s.sc.late ? '時間外' : '時間内') : '', (s.shooter || '').replace(/[,"]/g, ' '), s.sc && s.sc.split != null ? s.sc.split : '', (s.shooterCode || '').replace(/[,"]/g, ' '), (s.shooterUnit || '').replace(/[,"]/g, ' ')].join(','));
     }
     if (!rows.length) { alert('生波形が見つからず、CSVを作れませんでした。\n保存状況：ショット' + all.length + '件、生波形あり0件。\n「設定」で連続生データを保存しておくと、生波形から再構築できます。'); return; }
-    const bias = `# 静止バイアス(dps): GyroX=${b0.gx.toFixed(3)}, GyroY=${b0.gy.toFixed(3)}, GyroZ=${b0.gz.toFixed(3)}\n`;
+    const bias = `# 静止バイアス(dps): GyroX=${b0.gx.toFixed(3)}, GyroY=${b0.gy.toFixed(3)}, GyroZ=${b0.gz.toFixed(3)}, 版=${MACO_VERSION}\n`;
     openExportSheet(`maco_train_${sid}.csv`, bias + header + rows.join('\n'), `${rows.length}発を出力${skipped ? '（生波形なしで' + skipped + '発を除外）' : ''}`);
   } catch (e) { alert('CSVの作成に失敗しました: ' + (e && e.message)); }
   finally { $('btnExportCsv').textContent = 'CSV 共有・保存'; }
@@ -2489,6 +2521,7 @@ const SET_SPEC = {
     ['holdMax', '棄却：照準が安定していない（dps）', '撃発前3秒の角速度の中央値がこれ以上なら撃発とみなさない（本物の撃発は最大3.0、誤検知は4.5以上）', 2, 20, 0.5],
     ['orientMax', '棄却：銃の向き（deg）', '撃発直前の重力方向が据銃時の向きからこの角度以上ずれていれば撃発とみなさない（置いた・横倒し等）。本物の撃発は最大22°', 20, 90, 5],
     ['mountUp', 'M5を上下逆に取り付けている', '据銃時にM5の画面が上を向く取り付け（既存は画面が下向き）', 'bool'],
+    ['gbbPeakMin', '棄却：GBBの衝撃が弱い（G）', '撃発の衝撃がこれ未満なら撃発としない（ガス不足・弾切れ等）。本物の撃発は0.96G以上', 0, 2, 0.05],
     ['holdRecent', '要確認：据銃直後の撃発（dps）', '3秒の揺れが上の値以上でも、直前1秒の中央値がこれ未満なら棄却せず「要確認」で記録', 1, 10, 0.1],
     ['holdMin', '棄却：手で保持していない（dps）', '同じ中央値がこれ未満なら台に置いた状態等とみなす（本物の撃発は最小0.86）', 0, 2, 0.1],
   ],
@@ -2573,6 +2606,7 @@ $('btnCalib').onclick = calibrate;
 $('btnCantZero').onclick = recordCantZero;
 $('scenSel').onchange = () => { settings.scen = $('scenSel').value; saveSettings(); renderScenBar(); };
 $('btnAddCustom').onclick = addCustom;
+$('btnCheckVer').onclick = () => checkUpdate(true); $('btnReloadVer').onclick = reloadLatest;
 $('btnTestBuzz').onclick = testBuzz;
 $('btnTestVoice').onclick = () => speak('92点です。1コ的、終了です。4発中3発が時間内、平均88点でした。', true);
 ['actReload', 'actMal'].forEach(id => { const el = $(id), ty = el.dataset.type;
@@ -2631,6 +2665,7 @@ function showIdle() {
   await DB.open();
   makeDetector(); newSession(); reviewSessionId = session.id;
   onDetState('ARMED', {}); showIdle(); renderStrip(); renderCalib(); updateBanner(); renderSettings(); renderGun();
+  $('verStatus').textContent = `この版：${MACO_VERSION}`; setTimeout(() => checkUpdate(false), 1500);
   renderScenSelect(); renderCustomList(); renderScenBar(); $('shooterInput').value = settings.shooter || ''; $('shooterCodeInput').value = settings.shooterCode || ''; $('shooterUnitInput').value = settings.shooterUnit || ''; renderRoster();
   if (!('bluetooth' in navigator)) $('btnConnect').title = 'Web Bluetooth対応ブラウザ（Bluefy等）で開いてください';
 })();
