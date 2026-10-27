@@ -371,7 +371,7 @@
 // =========================================================
 
 // ==CORE_BEGIN==
-const MACO_VERSION = 'MaCo錬成 2026-10-26b';
+const MACO_VERSION = 'MaCo錬成 2026-10-27';
 // ---- 設定の既定値（検知パラメータは既存の328件の波形で検証した値） ----
 const DEFAULTS = {
   thr: 0.08,        // 撃発候補：加速度差分(G/サンプル)のしきい値
@@ -1490,6 +1490,12 @@ function onDetShot() {
 // ---- 撃発確定 → 採点 → 記録 ----
 function finalizeShot(t0, method = 'auto', meta) {
   if (method === 'manual' && gunProfile(settings.gun).mode === 'gbb') { gyroBias = det.bias; const adj = gbbT0(det.window(t0 - 400, t0 + 60), t0); if (adj != null) t0 = adj; }
+  // 手動記録・VP9・400Hz：T0を400Hzの波形で合わせ直す（refineT0参照）。以降の採点・軌跡・方向判定・生波形はすべてこのT0を使う
+  let t0Shift = null;
+  if (method === 'manual' && settings.gun === 'vp9' && decim.factor > 1) {
+    const r = refineT0(hiBuf.filter(x => x.t >= t0 - 30 && x.t <= t0 + 30), t0);
+    if (r != null && det.lastT >= r + SCORE_DELAY_MS) { t0Shift = r - t0; t0 = r; } // 採点に必要な撃発後のデータがある場合のみ
+  }
   const ws = det.window(t0 - PRE_SHOT_MS, t0 + SCORE_DELAY_MS);
   const a = analyzeWindow(ws, t0, det.bias, settings.gun);
   if (!a) { $('resCause').textContent = '採点できませんでした（波形データ不足）'; return null; }
@@ -1527,7 +1533,7 @@ function finalizeShot(t0, method = 'auto', meta) {
     t0Abs: t0, t0Rel: 0, predicted: a.predicted, band, quad: a.quad,
     quality: (meta && meta.quality) || 'ok', preMax: meta && meta.preMax != null ? meta.preMax : null, postMax: meta && meta.postMax != null ? meta.postMax : null, mantis: null, cause: '', causeFree: '', deleted: false,
     bias: Object.assign({}, det.bias), rawReady: false, gun: settings.gun, shooter: settings.shooter || '', shooterCode: settings.shooterCode || '', shooterUnit: settings.shooterUnit || '',
-    cant: cantOf(ws, t0, settings.cantZero), sc, srcHz: decim.hz(),
+    cant: cantOf(ws, t0, settings.cantZero), sc, srcHz: decim.hz(), t0Shift,
   };
   shots.push(shot);
   lastShotShown = shot;
@@ -2043,15 +2049,40 @@ async function connectBle() {
 function setConnected(c) {
   connected = c; $('connDot').classList.toggle('on', c);
   $('btnConnect').textContent = c ? '接続中' : 'BLE接続'; $('btnConnect').disabled = c; $('btnConnect').classList.toggle('on', c);
-  if (c) { det.hardReset(); decim.reset(); lastLiveDraw = 0; }
+  if (c) { det.hardReset(); decim.reset(); hiBuf = []; lastLiveDraw = 0; }
   if (!c && scenRun) finishScenario(true);
   onDetState(det.state, {}); updateBanner(); renderScenBar();
 }
 const decim = new Decimator();   // 受信周期→100Hz（旧ファームはそのまま）
+// 受信周期のまま（400Hz）の直近20秒。手動記録のT0の合わせ直しに使う（100Hzの旧ファームでは空）
+let hiBuf = [];
+const HI_BUF_MS = 20000;
+// ---- 手動記録のT0の合わせ直し（2026-10-27） ----
+// 手動で決めたT0の前後±20msで、400Hzの加速度の合成値の変化が最大の点を探し、その点 +4ms をT0とする。
+// +4msは実機VP9 49発でのずれの中央値（学習時のT0の位置に合わせる）。
+// 検証（VP9 49発、従来と同じ設置位置）：予測の平均絶対誤差 5.98 → 5.51。方向判定は49発とも同じ（大きさの差は最大0.08°）。
+// 補正量は中央値0ms、76%が±10ms以内、最大15.5ms。
+// 対象：手動記録の発、銃種VP9、400Hzファームのみ（自動検知・他の銃種・旧ファームは従来どおり）。
+const T0_REFINE_WIN_MS = 20;
+const T0_REFINE_OFFSET_MS = 4;
+function refineT0(hi, t0) {
+  if (!hi || hi.length < 3) return null;
+  let best = null, bd = -1;
+  const mag = a => Math.sqrt(a.ax * a.ax + a.ay * a.ay + a.az * a.az);
+  for (let i = 1; i < hi.length; i++) {
+    const r = hi[i].t - t0; if (r < -T0_REFINE_WIN_MS || r > T0_REFINE_WIN_MS) continue;
+    const d = Math.abs(mag(hi[i]) - mag(hi[i - 1])); if (d > bd) { bd = d; best = hi[i].t; }
+  }
+  return best == null ? null : best + T0_REFINE_OFFSET_MS;
+}
 function onImu(ev) {
   const dv = ev.target.value; if (dv.byteLength < PACKET_SIZE) return;
   parsePackets(dv).forEach(raw => {
     updateClock(raw.t);
+    if (decim.factor == null || decim.factor > 1) {
+      hiBuf.push(raw);
+      if (hiBuf.length > 64 && hiBuf[0].t < raw.t - HI_BUF_MS) hiBuf.splice(0, hiBuf.findIndex(x => x.t >= raw.t - HI_BUF_MS));
+    } else if (hiBuf.length) hiBuf = [];
     if (settings.rawRecord) { rawBuf.push(raw); if (rawBuf.length >= 3000 * (decim.factor || 1)) flushRaw(); } // 連続生データは受信した周期のまま保存
     decim.push(raw).forEach(onSample);
   });
@@ -2531,7 +2562,7 @@ async function exportCsv() {
     const all = ((session && sid === session.id) ? shots : ((await DB.byIndex('shots', 'sessionId', sid)) || [])).filter(s => !s.deleted).sort((a, b) => a.no - b.no);
     if (!all.length) { alert('出力できるショットがありません。'); return; }
     const b0 = all[0].bias || { gx: 0, gy: 0, gz: 0 }; const cache = {};
-    const header = 'No,時刻,検知方式,Mantisスコア,予測スコア,予測誤差,低下原因,最大ブレdps,ブレ量D,反動予期ヒント,フォロー減衰比,突き出しヒント,直前1秒spreadX,方向判定カテゴリ,方向判定角度deg,軌跡X,軌跡Y,軌跡t_ms,波形GyroX,波形GyroY,波形GyroZ,波形AccelX,波形AccelY,波形AccelZ,予測帯,判定低下要因,検知品質,撃発前最大dps,撃発後最大dps,銃種,傾きdeg,練成シナリオ,回,的,反応時間ms,時間内,練成者,間隔ms,記号,所属,受信Hz\n';
+    const header = 'No,時刻,検知方式,Mantisスコア,予測スコア,予測誤差,低下原因,最大ブレdps,ブレ量D,反動予期ヒント,フォロー減衰比,突き出しヒント,直前1秒spreadX,方向判定カテゴリ,方向判定角度deg,軌跡X,軌跡Y,軌跡t_ms,波形GyroX,波形GyroY,波形GyroZ,波形AccelX,波形AccelY,波形AccelZ,予測帯,判定低下要因,検知品質,撃発前最大dps,撃発後最大dps,銃種,傾きdeg,練成シナリオ,回,的,反応時間ms,時間内,練成者,間隔ms,記号,所属,受信Hz,T0補正ms\n';
     const rows = []; let skipped = 0;
     for (const s of all) {
       const raw = await getRaw(s, cache); if (!raw) { skipped++; continue; }
@@ -2547,7 +2578,7 @@ async function exportCsv() {
         `"${j(samples, p => p.ax, 3)}"`, `"${j(samples, p => p.ay, 3)}"`, `"${j(samples, p => p.az, 3)}"`, bandOf(a.predicted, settings) || '',
         causeText(Object.assign({}, s, { band: bandOf(a.predicted, settings), quad: q })), s.quality === 'suspect' ? '要確認' : '通常',
         s.preMax != null ? s.preMax.toFixed(0) : '', s.postMax != null ? s.postMax.toFixed(0) : '', gunProfile(s.gun).label,
-        s.cant != null ? s.cant.toFixed(2) : '', s.sc && scenCfg(s.sc) ? scenCfg(s.sc).short.replace(/[,"]/g, ' ') : '', s.sc ? s.sc.rep : '', s.sc ? s.sc.target : '', s.sc ? s.sc.react : '', s.sc ? (s.sc.late ? '時間外' : '時間内') : '', (s.shooter || '').replace(/[,"]/g, ' '), s.sc && s.sc.split != null ? s.sc.split : '', (s.shooterCode || '').replace(/[,"]/g, ' '), (s.shooterUnit || '').replace(/[,"]/g, ' '), s.srcHz || ''].join(','));
+        s.cant != null ? s.cant.toFixed(2) : '', s.sc && scenCfg(s.sc) ? scenCfg(s.sc).short.replace(/[,"]/g, ' ') : '', s.sc ? s.sc.rep : '', s.sc ? s.sc.target : '', s.sc ? s.sc.react : '', s.sc ? (s.sc.late ? '時間外' : '時間内') : '', (s.shooter || '').replace(/[,"]/g, ' '), s.sc && s.sc.split != null ? s.sc.split : '', (s.shooterCode || '').replace(/[,"]/g, ' '), (s.shooterUnit || '').replace(/[,"]/g, ' '), s.srcHz || '', s.t0Shift != null ? s.t0Shift.toFixed(1) : ''].join(','));
     }
     if (!rows.length) { alert('生波形が見つからず、CSVを作れませんでした。\n保存状況：ショット' + all.length + '件、生波形あり0件。\n「設定」で連続生データを保存しておくと、生波形から再構築できます。'); return; }
     const bias = `# 静止バイアス(dps): GyroX=${b0.gx.toFixed(3)}, GyroY=${b0.gy.toFixed(3)}, GyroZ=${b0.gz.toFixed(3)}, 版=${MACO_VERSION}\n`;
