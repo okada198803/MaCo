@@ -1,6 +1,6 @@
 /*
  * MaCo (Marksmanship Coach) 射撃解析デバイス - M5StickS3 ファームウェア
- * 版：MaCo-FW 2026-10-26（400Hz・±16G）
+ * 版：MaCo-FW 2026-10-27（400Hz・±16G・FIFO読み取り）
  * -----------------------------------------------------------
  * 役割：
  *   ・内蔵IMU(BMI270)から角速度(dps)・加速度(G)を400Hzで取得
@@ -14,6 +14,14 @@
  *   本版はセンサーを 加速度・ジャイロとも 400Hz（normalフィルタ、帯域 約160Hz／約137Hz）、
  *   加速度 ±16G（GBB・小銃の反動の頭打ち対策）、ジャイロ ±2000dps に設定する。
  *   読み取りはセンサーのデータ準備フラグに合わせる（センサーの時計に同期し、重複・取りこぼしを防ぐ）。
+ *
+ * 【2026-10-27 改訂：FIFO読み取り】
+ *   データ準備フラグ方式では、読み取りの遅れ（BLE送信など）で約3%のサンプルが欠落した（実機VP9 50発、5ms間隔3%）。
+ *   本版はセンサー内蔵のFIFO（2KB、約150サンプル分）に溜めて、4msごとにまとめて読む。読み遅れがあっても欠落しない。
+ *   FIFOはヘッダ付き形式（1サンプル13バイト：ヘッダ0x8C＋ジャイロ6＋加速度6）。
+ *   各サンプルの時刻は、前のサンプルに周期を足して付ける（周期は受信したサンプル数と経過時間から求める。実測約405Hz）。
+ *   軸と換算はM5Unifiedと同じにする（StickS3：X=センサー+Y、Y=センサー−X、Z=+Z。加速度16G/32768、ジャイロ2000dps/32768）。
+ *   FIFOの設定に失敗した場合は、従来のデータ準備フラグ方式で動く（画面に FIFO NG）。
  *
  * 【パケット形式】（リトルエンディアン）
  *   1サンプル28バイト（旧版と同じ）を n 個つなげて1回で通知する（n = 1〜4、MTUで決まる）。
@@ -36,7 +44,7 @@
 #include <BLEUtils.h>
 #include <BLE2902.h>
 
-#define FW_VERSION "MaCo-FW 2026-10-26"
+#define FW_VERSION "MaCo-FW 2026-10-27 FIFO"
 
 // ---- BLE UUID定義（独自定義。Nordic UARTのUUID体系を流用） ----
 #define SERVICE_UUID        "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
@@ -53,8 +61,25 @@ static const uint8_t ACC_CONF_400  = 0x80 | 0x20 | 0x0A;   // 0xAA
 static const uint8_t GYR_CONF_400  = 0x80 | 0x20 | 0x0A;   // 0xAA
 static const uint8_t ACC_RANGE_16G = 0x03;
 static const uint8_t GYR_RANGE_2000 = 0x00;
-// M5Unifiedは加速度を±8G前提で換算するため、±16G設定では2倍する
+// M5Unifiedは加速度を±8G前提で換算するため、±16G設定では2倍する（FIFOが使えない場合の従来方式で使う）
 static const float ACCEL_SCALE = 2.0f;
+
+// ---- BMI270 FIFO ----
+static const uint8_t REG_FIFO_LENGTH_0 = 0x24;  // 0x24-0x25（14ビット、バイト数）
+static const uint8_t REG_FIFO_DATA     = 0x26;
+static const uint8_t REG_FIFO_DOWNS    = 0x45;
+static const uint8_t REG_FIFO_CONFIG_0 = 0x48;
+static const uint8_t REG_FIFO_CONFIG_1 = 0x49;
+static const uint8_t REG_CMD           = 0x7E;
+static const uint8_t FIFO_DOWNS_FILT   = 0x88;  // 加速度・ジャイロともフィルタ後のデータ、間引きなし
+static const uint8_t FIFO_CONFIG_0_VAL = 0x00;  // 満杯時は古いものから上書き、センサー時刻フレームなし
+static const uint8_t FIFO_CONFIG_1_VAL = 0xD0;  // gyr_en | acc_en | header_en
+static const uint8_t CMD_FIFO_FLUSH    = 0xB0;
+static const uint8_t FH_GYR_ACC = 0x8C, FH_ACC = 0x84, FH_GYR = 0x88, FH_SKIP = 0x40, FH_TIME = 0x44, FH_CFG = 0x48;
+static const float FIFO_ACC_RES = 16.0f / 32768.0f;    // G/LSB（±16G）
+static const float FIFO_GYR_RES = 2000.0f / 32768.0f;  // dps/LSB（±2000dps）
+static const uint32_t FIFO_POLL_MS = 4;
+static uint8_t fifoBuf[2048 + 16];
 
 static const int MAX_SAMPLES_PER_PACKET = 4;
 static const uint32_t BATTERY_UPDATE_INTERVAL_MS = 5000;
@@ -76,7 +101,9 @@ volatile uint32_t lastRateHz = 0;
 volatile uint16_t peerMtu = 23;
 volatile int      samplesPerPacket = 1;
 volatile bool     needRedraw = true;
+volatile uint32_t fifoSkipped = 0;   // FIFOのあふれで失ったサンプル数（通常0）
 bool imuConfOk = false;
+bool fifoOk = false;
 
 class ServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer* srv) override { deviceConnected = true; needRedraw = true; }
@@ -102,6 +129,22 @@ bool configureImu() {
       && (imu->readRegister8(REG_GYR_RANGE) & 0x07) == GYR_RANGE_2000;
 }
 
+// ---- FIFOの設定（configureImu()の後に呼ぶ）。読み返して確認する ----
+bool configureFifo() {
+  auto* imu = M5.Imu.getImuInstancePtr(0);
+  if (!imu) return false;
+  imu->writeRegister8(REG_FIFO_CONFIG_1, 0x00);   // いったん止める
+  imu->writeRegister8(REG_FIFO_DOWNS, FIFO_DOWNS_FILT);
+  imu->writeRegister8(REG_FIFO_CONFIG_0, FIFO_CONFIG_0_VAL);
+  imu->writeRegister8(REG_FIFO_CONFIG_1, FIFO_CONFIG_1_VAL);
+  delay(2);
+  imu->writeRegister8(REG_CMD, CMD_FIFO_FLUSH);
+  delay(2);
+  return imu->readRegister8(REG_FIFO_DOWNS) == FIFO_DOWNS_FILT
+      && (imu->readRegister8(REG_FIFO_CONFIG_0) & 0x03) == FIFO_CONFIG_0_VAL
+      && (imu->readRegister8(REG_FIFO_CONFIG_1) & 0xF0) == FIFO_CONFIG_1_VAL;
+}
+
 // MTUから1回の通知に入るサンプル数を決める（ATTヘッダ3バイトを除く）
 int calcSamplesPerPacket() {
   uint16_t mtu = 23;
@@ -113,12 +156,80 @@ int calcSamplesPerPacket() {
   return n;
 }
 
-// ---- IMUタスク：データ準備フラグを1msごとに確認し、加速度・ジャイロがそろったら1サンプルとする ----
-void imuTask(void*) {
-  ImuPacket buf[MAX_SAMPLES_PER_PACKET];
-  int n = 0;
+// ---- 送信：1サンプルを溜め、samplesPerPacket個たまったら通知する ----
+static ImuPacket txBuf[MAX_SAMPLES_PER_PACKET];
+static int txN = 0;
+static uint32_t lastSppCheck = 0;
+static inline void pushSample(uint32_t t, float gx, float gy, float gz, float ax, float ay, float az) {
+  if (!deviceConnected) { txN = 0; return; }
+  uint32_t now = millis();
+  if (now - lastSppCheck >= 1000) { lastSppCheck = now; int s = calcSamplesPerPacket(); if (s != samplesPerPacket) { samplesPerPacket = s; txN = 0; needRedraw = true; } }
+  ImuPacket& p = txBuf[txN++];
+  p.timestamp_ms = t;
+  p.gyroX = gx; p.gyroY = gy; p.gyroZ = gz;
+  p.accelX = ax; p.accelY = ay; p.accelZ = az;
+  if (txN >= samplesPerPacket) {
+    pTxChar->setValue((uint8_t*)txBuf, sizeof(ImuPacket) * txN);
+    pTxChar->notify();
+    txN = 0;
+  }
+}
+
+static inline int16_t le16(const uint8_t* b) { return (int16_t)((uint16_t)b[0] | ((uint16_t)b[1] << 8)); }
+
+// ---- IMUタスク（FIFO方式）：4msごとにFIFOをまとめて読み、1サンプルずつ時刻を付けて送る ----
+void imuTaskFifo() {
+  auto* imu = M5.Imu.getImuInstancePtr(0);
+  double tCur = 0, period = 2.5;       // ms。周期は受信数と経過時間から求め直す
+  uint32_t tFirst = 0; uint64_t nTot = 0; bool started = false;
+  uint32_t rateT0 = millis(), rateN = 0, lastBattery = 0;
+  for (;;) {
+    uint8_t lb[2];
+    uint16_t len = 0;
+    if (imu->readRegister(REG_FIFO_LENGTH_0, lb, 2)) len = (uint16_t)lb[0] | ((uint16_t)(lb[1] & 0x3F) << 8);
+    if (len > 2048) len = 2048;
+    if (len > 0 && imu->readRegister(REG_FIFO_DATA, fifoBuf, len)) {
+      uint32_t now = millis();
+      if (!started) { started = true; tFirst = now; tCur = now; }
+      size_t i = 0;
+      while (i < len) {
+        uint8_t h = fifoBuf[i] & 0xFC;   // 下位2ビットは割り込みタグ
+        if (h == FH_GYR_ACC) {
+          if (i + 13 > len) break;
+          const uint8_t* g = &fifoBuf[i + 1]; const uint8_t* a = &fifoBuf[i + 7];
+          int16_t gx = le16(g), gy = le16(g + 2), gz = le16(g + 4);
+          int16_t ax = le16(a), ay = le16(a + 2), az = le16(a + 4);
+          tCur += period; nTot++; rateN++;
+          // StickS3の軸（M5Unifiedと同じ）：X=+Y、Y=−X、Z=+Z
+          pushSample((uint32_t)(tCur + 0.5),
+                     gy * FIFO_GYR_RES, -gx * FIFO_GYR_RES, gz * FIFO_GYR_RES,
+                     ay * FIFO_ACC_RES, -ax * FIFO_ACC_RES, az * FIFO_ACC_RES);
+          i += 13;
+        } else if (h == FH_ACC || h == FH_GYR) { i += 7;              // 片方だけのフレーム（通常は出ない）
+        } else if (h == FH_SKIP) {                                     // あふれで失ったサンプル数
+          if (i + 2 > len) break;
+          uint8_t k = fifoBuf[i + 1]; fifoSkipped += k; tCur += period * k; nTot += k; needRedraw = true; i += 2;
+        } else if (h == FH_TIME) { i += 4;
+        } else if (h == FH_CFG)  { i += 5;
+        } else break;                                                   // 0x80（空）または不明
+      }
+      // 周期の推定：経過時間÷サンプル数（200サンプル以降、2.3〜2.7msの範囲）
+      if (nTot >= 200) { double est = (double)(now - tFirst) / (double)nTot; if (est > 2.3 && est < 2.7) period = est; }
+      if (now - rateT0 >= 1000) {
+        uint32_t r = rateN * 1000 / (now - rateT0); rateN = 0; rateT0 = now;
+        if (r + 5 < lastRateHz || r > lastRateHz + 5) { lastRateHz = r; needRedraw = true; }
+      }
+      // 電源ICの読み取りもこのタスクで行う（I2Cの競合を避ける）。FIFOに溜まるので読み遅れても欠落しない
+      if (now - lastBattery >= BATTERY_UPDATE_INTERVAL_MS) { lastBattery = now; batteryLevel = M5.Power.getBatteryLevel(); needRedraw = true; }
+    }
+    vTaskDelay(pdMS_TO_TICKS(FIFO_POLL_MS));
+  }
+}
+
+// ---- IMUタスク（従来方式。FIFOが使えない場合）：データ準備フラグを1msごとに確認する ----
+void imuTaskPoll() {
   uint8_t gotMask = 0;
-  uint32_t rateT0 = millis(), rateN = 0, lastBattery = 0, lastSppCheck = 0;
+  uint32_t rateT0 = millis(), rateN = 0, lastBattery = 0;
   for (;;) {
     uint32_t mask = M5.Imu.update(); // 新しいデータがあれば読み込む（無ければ0）
     if (mask) {
@@ -130,32 +241,19 @@ void imuTask(void*) {
         rateN++;
         if (now - rateT0 >= 1000) {
           uint32_t r = rateN * 1000 / (now - rateT0); rateN = 0; rateT0 = now;
-          if (r + 5 < lastRateHz || r > lastRateHz + 5) { lastRateHz = r; needRedraw = true; } // 画面のちらつきを避け、変化したときだけ描き直す
+          if (r + 5 < lastRateHz || r > lastRateHz + 5) { lastRateHz = r; needRedraw = true; }
         }
-        if (deviceConnected) {
-          if (now - lastSppCheck >= 1000) { lastSppCheck = now; int s = calcSamplesPerPacket(); if (s != samplesPerPacket) { samplesPerPacket = s; n = 0; needRedraw = true; } }
-          ImuPacket& p = buf[n++];
-          p.timestamp_ms = now;
-          p.gyroX = d.gyro.x;  p.gyroY = d.gyro.y;  p.gyroZ = d.gyro.z;
-          p.accelX = d.accel.x * ACCEL_SCALE; p.accelY = d.accel.y * ACCEL_SCALE; p.accelZ = d.accel.z * ACCEL_SCALE;
-          if (n >= samplesPerPacket) {
-            pTxChar->setValue((uint8_t*)buf, sizeof(ImuPacket) * n);
-            pTxChar->notify();
-            n = 0;
-          }
-        } else {
-          n = 0;
-        }
-        // 電源ICの読み取りもこのタスクで行う（I2Cの競合を避ける）。サンプル直後に行い、次のサンプルまでに終える
-        if (now - lastBattery >= BATTERY_UPDATE_INTERVAL_MS) {
-          lastBattery = now;
-          batteryLevel = M5.Power.getBatteryLevel();
-          needRedraw = true;
-        }
+        pushSample(now, d.gyro.x, d.gyro.y, d.gyro.z,
+                   d.accel.x * ACCEL_SCALE, d.accel.y * ACCEL_SCALE, d.accel.z * ACCEL_SCALE);
+        if (now - lastBattery >= BATTERY_UPDATE_INTERVAL_MS) { lastBattery = now; batteryLevel = M5.Power.getBatteryLevel(); needRedraw = true; }
       }
     }
-    vTaskDelay(1); // 1ms（400Hz=2.5ms周期のデータを取りこぼさない間隔）
+    vTaskDelay(1);
   }
+}
+
+void imuTask(void*) {
+  if (fifoOk) imuTaskFifo(); else imuTaskPoll();
 }
 
 void drawScreen() {
@@ -169,6 +267,9 @@ void drawScreen() {
   M5.Display.setCursor(6, 48);
   if (!imuConfOk) { M5.Display.setTextColor(TFT_YELLOW); M5.Display.print("IMU CONF NG (default 100Hz/8G)"); M5.Display.setTextColor(TFT_WHITE); }
   else M5.Display.print("IMU CONF OK");
+  M5.Display.setCursor(6, 90);
+  if (!fifoOk) { M5.Display.setTextColor(TFT_YELLOW); M5.Display.print("FIFO NG"); M5.Display.setTextColor(TFT_WHITE); }
+  else M5.Display.printf("FIFO OK  drop %lu", (unsigned long)fifoSkipped);
   M5.Display.setCursor(6, 62);
   if (deviceConnected) M5.Display.printf("MTU %u  %d smp/pkt", (unsigned)peerMtu, (int)samplesPerPacket);
   M5.Display.setCursor(6, 76);
@@ -192,6 +293,7 @@ void setup() {
 
   M5.Imu.begin();
   imuConfOk = configureImu();
+  fifoOk = imuConfOk && configureFifo();   // センサー設定が正しいときだけFIFOを使う
   batteryLevel = M5.Power.getBatteryLevel();
 
   // ---- BLE初期化 ----
