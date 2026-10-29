@@ -371,7 +371,7 @@
 // =========================================================
 
 // ==CORE_BEGIN==
-const MACO_VERSION = 'MaCo錬成 2026-10-27b';
+const MACO_VERSION = 'MaCo錬成 2026-10-29';
 // ---- 設定の既定値（検知パラメータは既存の328件の波形で検証した値） ----
 const DEFAULTS = {
   thr: 0.08,        // 撃発候補：加速度差分(G/サンプル)のしきい値
@@ -1471,7 +1471,7 @@ function makeDetector() {
     onState: onDetState, onShot: onDetShot, onScoreDue: (t0, it) => finalizeShot(t0, 'auto', it), onRawDue: fillRaw,
     onReject: (r) => { lastReject = r; rejectLog.unshift(Object.assign({ wall: Date.now() }, r)); if (rejectLog.length > 8) rejectLog.pop(); renderDiag(); if (r.weak && r.inScen) noteWeak(); },
     inScenario: (t0) => scenInWindow(t0),
-    rapid: () => !!(scenRun && scenRun.sc.type === 'string'),
+    rapid: () => !!(scenRun && (scenRun.sc.type === 'string' || (scenRun.sc.perRep || 1) > 1)),
     rifleT0: (tp) => rifleMainT0(tp),
   });
   if (savedBias) det.bias = Object.assign({}, savedBias.bias);
@@ -1536,7 +1536,10 @@ function finalizeShot(t0, method = 'auto', meta) {
     }
     if (as) {
       sc = { run: scenRun.run, key: scenRun.key, rep: as.rep, target: as.target, react: Math.round(as.react), late: as.late, cfg: scenSnap(scenRun.sc) };
-      if (shots.some(s => !s.deleted && s.sc && s.sc.run === sc.run && s.sc.rep === sc.rep)) sc.extra = true; // 同じ回の2発目
+      // 同じ回の何発目か（1回の発数を超えた発は extra）。2発目以降は前の発からの間隔、0.6秒未満は連射（採点の窓に前の発が入るため点数は参考）
+      const per = scenRun.sc.perRep || 1, prev = shots.filter(s => !s.deleted && s.sc && s.sc.run === sc.run && s.sc.rep === sc.rep && !s.sc.extra);
+      if (prev.length >= per) sc.extra = true;
+      else { sc.k = prev.length + 1; const last = prev[prev.length - 1]; if (last) { sc.split = Math.round(sc.react - last.sc.react); if (sc.split < 600) sc.rapid = true; } }
     }
   }
   session.count++;
@@ -1605,7 +1608,9 @@ function scenLine(shot) {
   const s = shot.sc, sc = scenCfg(s); if (!sc) return '';
   if (sc.type === 'string') return `${sc.short} ${s.rep}/${sc.shots}発目${sc.targets > 1 ? '（的' + s.target + '）' : ''} ／ ブザーから ${(s.react / 1000).toFixed(2)}秒` +
     (s.split != null ? `・間隔 ${(s.split / 1000).toFixed(2)}秒` : '') + (s.late ? '（時間外）' : '') + (s.extra ? '（規定の発数を超過）' : '') + (s.rapid ? '（連射：点数は参考）' : '');
-  return `${sc.short} 第${s.rep}発${sc.targets > 1 ? '（的' + s.target + '）' : ''} ／ ブザーから ${(s.react / 1000).toFixed(2)}秒` + (s.late ? '（時間外）' : '') + (s.extra ? '（同じ回の2発目）' : '');
+  const per = sc.perRep || 1;
+  return `${sc.short} 第${s.rep}${per > 1 ? '回' + (s.k ? `の${s.k}/${per}発目` : '') : '発'}${sc.targets > 1 ? '（的' + s.target + '）' : ''} ／ ブザーから ${(s.react / 1000).toFixed(2)}秒` +
+    (s.split != null ? `・間隔 ${(s.split / 1000).toFixed(2)}秒` : '') + (s.late ? '（時間外）' : '') + (s.extra ? `（同じ回の${per + 1}発目以降）` : '') + (s.rapid ? '（連射：点数は参考）' : '');
 }
 const SUSPECT_NOTE = '⚠ 要確認：撃発前後の動きが通常より大きく、誤検知（持ち替え等）の可能性があります。';
 function showResult(shot) {
@@ -1749,6 +1754,7 @@ const CUSTOM_FIELDS = [ // [キー, 表示名, 単位, 最小, 最大, 刻み, �
   ['restS', 'スライド操作時間', '秒', 0, 60, 0.5, 5],
   ['restGbbS', '休止（ガスブローバック時）', '秒', 0, 60, 0.5, 2],
   ['reps', '試行回数', '回', 1, 50, 1, 5],
+  ['perRep', '1回の発数（GBBのみ。ドライは1発）', '発', 1, 10, 1, 1],
   ['targets', '的数', '個', 1, 10, 1, 1],
   ['leadS', '開始までの秒数', '秒', 1, 30, 1, 3],
 ];
@@ -1780,7 +1786,7 @@ function customScenario(c) {
     return { type: 'string', label: `${c.name}（${c.shots}発）`, short: c.name, shots: c.shots, tmap, reloadAt: c.reloadAt < c.shots ? c.reloadAt : 0, limitMs: Math.round(c.limitS * 1000),
       goals: { first: c.gFirst, split: c.gSplit, total: c.gTotal, reload: c.gReload }, targets: Math.max(...tmap), leadS: c.leadS, custom: true };
   }
-  return { label: `${c.name}（${+c.parS.toFixed(1)}秒×${c.reps}発）`, short: c.name, reps: c.reps, parMs: Math.round(c.parS * 1000), restMs: Math.round(c.restS * 1000), restGbbS: c.restGbbS, targets: c.targets, leadS: c.leadS, custom: true };
+  return { label: `${c.name}（${+c.parS.toFixed(1)}秒×${c.reps}${(c.perRep || 1) > 1 ? '回・各' + c.perRep + '発' : '発'}）`, short: c.name, reps: c.reps, perRep: c.perRep || 1, parMs: Math.round(c.parS * 1000), restMs: Math.round(c.restS * 1000), restGbbS: c.restGbbS, targets: c.targets, leadS: c.leadS, custom: true };
 }
 // 銃種（ドライ／ガスブローバック）に合わせて練成の中身を切り替える（選択肢は共通）
 //   反復（1コ的・3コ的・カスタム反復）：ガスブローバックはスライド操作が要らないため休止を短縮した値を使う
@@ -1801,6 +1807,9 @@ function scenarioForGun(sc, gun, key) {
       if (sc.goals.total) sc.goals.total = +(sc.goals.total + sl * nSplit).toFixed(2);
       sc.slideS = sl;
     }
+  } else if (!gbb && (sc.perRep || 1) > 1) {
+    // 1回に複数発（2026-10-29）はGBBのみ。ドライは2発目の前にスライド操作が要るため1発に固定する
+    sc.label = sc.label.replace(`回・各${sc.perRep}発`, '発'); sc.perRep = 1;
   } else if (gbb) {
     sc.restMs = Math.round((key === 't1' ? settings.gbbRest1 : key === 't3' ? settings.gbbRest3 : (sc.restGbbS != null ? sc.restGbbS : sc.restMs / 1000)) * 1000);
   }
@@ -1814,7 +1823,7 @@ function renderScenSelect() {
   if (settings.scen !== 'free' && !scenarioOf(settings.scen)) { settings.scen = 'free'; saveSettings(); }
   sel.innerHTML = `<option value="free">1 自由練成</option><option value="t1">2 1コ的 3秒×4</option><option value="t3">3 3コ的 2秒×3</option>` +
     `<option value="m_posture">4 至近射撃（姿勢変換）</option><option value="m_day">5 制圧致命射撃（昼間）</option><option value="m_night">6 制圧致命射撃（夜間）</option>` +
-    customScens.map((c, i) => `<option value="${escHtml(c.id)}">${i + 7} ${escHtml(c.name)} ${c.type === 'string' ? c.shots + '発連続' : +c.parS.toFixed(1) + '秒×' + c.reps}</option>`).join('');
+    customScens.map((c, i) => `<option value="${escHtml(c.id)}">${i + 7} ${escHtml(c.name)} ${c.type === 'string' ? c.shots + '発連続' : +c.parS.toFixed(1) + '秒×' + c.reps + ((c.perRep || 1) > 1 ? '回・各' + c.perRep + '発' : '')}</option>`).join('');
   sel.value = settings.scen;
 }
 function renderCustomList() {
@@ -1826,7 +1835,7 @@ function renderCustomList() {
     (c.type === 'string'
       ? numRow(c, CUSTOM_FIELDS_STR[0]) + `<div class="set-row"><div class="sl">的の割当<small>各的の発数をカンマ区切り（例 4,3,3）。空欄は全て的1</small></div><input type="text" data-cf="tmap" style="max-width:110px" value="${escHtml(c.tmap || '')}"></div>` +
         CUSTOM_FIELDS_STR.slice(1).map(f => numRow(c, f)).join('') + `<div class="hint" style="margin:4px 0 0">的：${tmapOf(c.tmap, c.shots).join(' ')}</div>`
-      : CUSTOM_FIELDS.map(f => numRow(c, f)).join('') + `<div class="hint" style="margin:4px 0 0">1回 ${(c.parS + c.restS).toFixed(1)}秒・全体 約${Math.round(c.leadS + c.reps * c.parS + (c.reps - 1) * c.restS)}秒</div>`) +
+      : CUSTOM_FIELDS.map(f => numRow(c, f)).join('') + `<div class="hint" style="margin:4px 0 0">1回 ${(c.parS + c.restS).toFixed(1)}秒・全体 約${Math.round(c.leadS + c.reps * c.parS + (c.reps - 1) * c.restS)}秒${(c.perRep || 1) > 1 ? `・1回に同じ的へ${c.perRep}発（規定 ${c.reps * c.perRep}発）` : ''}</div>`) +
     `<button class="cust-del danger">削除</button></div>`).join('') : '<p class="hint" style="margin:0">登録はありません。</p>';
   box.querySelectorAll('.cust').forEach(el => {
     const c = customScens.find(x => x.id === el.dataset.id);
@@ -1950,20 +1959,20 @@ function finishScenario(aborted) {
       speak(`${r.sc.short}、終了です。${list.length}発、` + (m ? `合計${m.total.toFixed(1)}秒` + (m.split != null ? `、射撃間隔は平均${m.split.toFixed(1)}秒` : '') : '') + (ok.length ? `、平均${Math.round(mean(ok.map(s => s.predicted)))}点でした。` : 'でした。'), false); }
     return;
   }
-  const st = scenStats(list, tl.length);
-  if (vo) speak(`${r.sc.short}、${aborted ? '中止しました' : '終了です'}。${tl.length}発中${st.inTime}発が時間内` + (st.mean != null ? `、平均${Math.round(st.mean)}点` : '') + (st.reactMean != null ? `、反応は平均${(st.reactMean / 1000).toFixed(1)}秒` : '') + 'でした。', false);
+  const per = r.sc.perRep || 1, st = scenStats(list, tl.length, per);
+  if (vo) speak(`${r.sc.short}、${aborted ? '中止しました' : '終了です'}。${st.planned}発中${st.inTime}発が時間内` + (st.mean != null ? `、平均${Math.round(st.mean)}点` : '') + (st.reactMean != null ? `、反応は平均${(st.reactMean / 1000).toFixed(1)}秒` : '') + 'でした。', false);
   $('hero').className = 'hero' + (st.n ? ' b-' + bandOf(st.mean, settings) : '');
   $('resScore').textContent = st.n ? Math.round(st.mean) : '--';
   $('resBand').textContent = st.n ? bandOf(st.mean, settings) : '–'; $('resBand').className = 'band' + (st.n ? ' b-' + bandOf(st.mean, settings) : '');
-  $('resCause').textContent = `${r.sc.short} ${aborted ? '中止' : '終了'}：時間内 ${st.inTime}/${tl.length}発` + (st.reactMean != null ? ` ／ 平均 ${(st.reactMean / 1000).toFixed(2)}秒` : '');
+  $('resCause').textContent = `${r.sc.short} ${aborted ? '中止' : '終了'}：時間内 ${st.inTime}/${st.planned}発` + (st.reactMean != null ? ` ／ ${per > 1 ? '初弾 ' : ''}平均 ${(st.reactMean / 1000).toFixed(2)}秒` : '') + multiLine(st);
   $('resTip').textContent = st.cantMax != null ? '最大の' + cantText(st.cantMax) : '';
-  $('resMeta').textContent = tl.map(x => { const s = list.find(y => y.sc.rep === x.rep); return `${x.rep}${r.sc.targets > 1 ? '(的' + x.target + ')' : ''}: ` +
-    (s ? `${(s.sc.react / 1000).toFixed(2)}秒 ${Math.round(s.predicted)}点 ${cantText(s.cant).replace('傾き ', '')}${s.sc.late ? ' 時間外' : ''}${s.quality === 'suspect' ? ' 要確認' : ''}` : '未射撃'); }).join('\n');
+  $('resMeta').textContent = tl.map(x => { const ss = list.filter(y => y.sc.rep === x.rep), s = ss[0]; return `${x.rep}${r.sc.targets > 1 ? '(的' + x.target + ')' : ''}: ` +
+    (!s ? '未射撃' : per > 1 ? repShotsText(ss, per) : `${(s.sc.react / 1000).toFixed(2)}秒 ${Math.round(s.predicted)}点 ${cantText(s.cant).replace('傾き ', '')}${s.sc.late ? ' 時間外' : ''}${s.quality === 'suspect' ? ' 要確認' : ''}`); }).join('\n');
   renderScenBar();
 }
 function scenSnap(sc) {
   if (sc.type === 'string') return { type: 'string', label: sc.label, short: sc.short, shots: sc.shots, tmap: sc.tmap, reloadAt: sc.reloadAt, limitMs: sc.limitMs, goals: sc.goals, targets: sc.targets, mode: sc.mode, slideS: sc.slideS, audioDelayMs: sc.audioDelayMs };
-  return { label: sc.label, short: sc.short, reps: sc.reps, parMs: sc.parMs, restMs: sc.restMs, targets: sc.targets, mode: sc.mode, audioDelayMs: sc.audioDelayMs };
+  return { label: sc.label, short: sc.short, reps: sc.reps, perRep: sc.perRep || 1, parMs: sc.parMs, restMs: sc.restMs, targets: sc.targets, mode: sc.mode, audioDelayMs: sc.audioDelayMs };
 }
 // 連続射撃の終了時の表示（点数の平均は時間内・要確認でない・連射でない発）
 function showStringResult(r, list) {
@@ -1977,16 +1986,34 @@ function showStringResult(r, list) {
     (s.sc.split != null ? ` +${(s.sc.split / 1000).toFixed(2)}` : '') + ` ${Math.round(s.predicted)}点${s.sc.rapid ? '(参考)' : ''}${s.sc.late ? ' 時間外' : ''}${s.quality === 'suspect' ? ' 要確認' : ''}`).join('\n');
 }
 // 練成1回分の集計。点数の平均は時間内かつ要確認でない発、反応時間は時間内の発
-function scenStats(list, reps) {
-  const inT = list.filter(s => !s.sc.late), ok = inT.filter(s => s.quality !== 'suspect' && s.predicted != null);
+// 1回に複数発（perRep>1）：規定の発数＝回数×発数。反応は各回の1発目、最終弾は規定の発数をすべて時間内に撃った回の最後の発のブザーからの時間、
+// 間隔は時間内の2発目以降の前の発からの時間。点数の平均は連射（0.6秒未満）の発を除く
+function scenStats(list, reps, perRep) {
+  const per = perRep || 1;
+  const inT = list.filter(s => !s.sc.late), ok = inT.filter(s => s.quality !== 'suspect' && s.predicted != null && !s.sc.rapid);
+  const firsts = inT.filter(s => !s.sc.k || s.sc.k === 1), splits = inT.filter(s => s.sc.split != null).map(s => s.sc.split);
+  const lasts = per > 1 ? [...new Set(list.map(s => s.sc.rep))].map(r => inT.filter(s => s.sc.rep === r)).filter(a => a.length >= per).map(a => Math.max(...a.map(s => s.sc.react))) : [];
   const cants = list.filter(s => s.cant != null).map(s => s.cant);
   return {
-    reps, shot: list.length, inTime: inT.length, n: ok.length,
+    reps, perRep: per, planned: reps * per, shot: list.length, inTime: inT.length, n: ok.length,
+    full: per > 1 ? lasts.length : null,
     mean: ok.length ? ok.reduce((a, s) => a + s.predicted, 0) / ok.length : null,
-    reactMean: inT.length ? inT.reduce((a, s) => a + s.sc.react, 0) / inT.length : null,
-    reactMax: inT.length ? Math.max(...inT.map(s => s.sc.react)) : null,
+    reactMean: firsts.length ? firsts.reduce((a, s) => a + s.sc.react, 0) / firsts.length : null,
+    reactMax: firsts.length ? Math.max(...firsts.map(s => s.sc.react)) : null,
+    lastMean: lasts.length ? lasts.reduce((a, b) => a + b, 0) / lasts.length : null,
+    splitMean: splits.length ? splits.reduce((a, b) => a + b, 0) / splits.length : null,
     cantMax: cants.length ? cants.reduce((a, c) => Math.abs(c) > Math.abs(a) ? c : a, 0) : null,
   };
+}
+// 複数発の回の集計の1行（最終弾・間隔）
+function multiLine(st) {
+  if (!st || st.perRep <= 1) return '';
+  return ` ／ 全弾時間内 ${st.full}/${st.reps}回` + (st.lastMean != null ? `・最終弾 平均${(st.lastMean / 1000).toFixed(2)}秒` : '') + (st.splitMean != null ? `・間隔 平均${(st.splitMean / 1000).toFixed(2)}秒` : '');
+}
+// 1回分の発の表示（同じ回の発を何発目の順に）
+function repShotsText(ss, per) {
+  return ss.slice().sort((a, b) => (a.sc.k || 1) - (b.sc.k || 1)).map(s => `${per > 1 ? (s.sc.k || 1) + '発目 ' : ''}${(s.sc.react / 1000).toFixed(2)}秒` + (s.sc.split != null ? `(+${(s.sc.split / 1000).toFixed(2)})` : '') +
+    ` ${Math.round(s.predicted)}点${s.sc.rapid ? '(参考)' : ''}${s.sc.late ? ' 時間外' : ''}${s.quality === 'suspect' ? ' 要確認' : ''}`).join(' ／ ');
 }
 function liveCant() {
   if (!det || det.buf.length < 30) return null; const lt = det.buf[det.buf.length - 1].t;
@@ -2290,13 +2317,16 @@ function renderScenSummary(live, runs) {
         <table>${ss.slice().sort((a, b) => a.sc.rep - b.sc.rep).map(s => `<tr><td>${s.sc.rep}${sc.targets > 1 ? '・的' + s.sc.target : ''}</td><td>${(s.sc.react / 1000).toFixed(2)}秒</td><td>${s.sc.split != null ? '+' + (s.sc.split / 1000).toFixed(2) : ''}</td>` +
           `<td><span class="chip b-${s.band}">${Math.round(s.predicted)}</span></td><td>${cantText(s.cant).replace('傾き ', '')}</td><td>${s.sc.late ? '<span class="tag-late">時間外</span>' : ''}${s.sc.rapid ? '<span class="tag-sus">連射</span>' : ''}${s.quality === 'suspect' ? '<span class="tag-sus">要確認</span>' : ''}</td></tr>`).join('')}</table></div>`;
     }
-    const reps = meta ? meta.reps : sc.reps, st = scenStats(ss, reps);
+    const reps = meta ? meta.reps : sc.reps, per = sc.perRep || 1, st = scenStats(ss, reps, per);
     const tl = scenarioTimeline(sc, 0).slice(0, reps);
     return `<div class="scen-run"><div class="h">${new Date(id).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}　${escHtml(sc.label)}${meta && meta.aborted ? '（中止）' : ''}</div>
-      <div class="s">時間内 ${st.inTime}/${reps}発` + (st.mean != null ? ` ／ 平均 ${Math.round(st.mean)}点` : '') +
-      (st.reactMean != null ? ` ／ 反応 平均${(st.reactMean / 1000).toFixed(2)}秒・最遅${(st.reactMax / 1000).toFixed(2)}秒` : '') +
+      <div class="s">時間内 ${st.inTime}/${st.planned}発` + (st.mean != null ? ` ／ 平均 ${Math.round(st.mean)}点` : '') +
+      (st.reactMean != null ? ` ／ ${per > 1 ? '初弾' : '反応'} 平均${(st.reactMean / 1000).toFixed(2)}秒・最遅${(st.reactMax / 1000).toFixed(2)}秒` : '') + multiLine(st) +
       (st.cantMax != null ? ` ／ 最大の${cantText(st.cantMax)}` : '') + `</div>
-      <table>${tl.map(x => { const s = ss.find(y => y.sc.rep === x.rep);
+      <table>${tl.map(x => { const rs = ss.filter(y => y.sc.rep === x.rep).sort((a, b) => (a.sc.k || 1) - (b.sc.k || 1));
+        if (per > 1 && rs.length) return rs.map(s => `<tr><td>${x.rep}-${s.sc.k || 1}${sc.targets > 1 ? '・的' + x.target : ''}</td><td>${(s.sc.react / 1000).toFixed(2)}秒${s.sc.split != null ? ` <small>+${(s.sc.split / 1000).toFixed(2)}</small>` : ''}</td><td><span class="chip b-${s.band}">${Math.round(s.predicted)}</span></td><td>${cantText(s.cant).replace('傾き ', '')}</td><td>${s.sc.late ? '<span class="tag-late">時間外</span>' : ''}${s.sc.rapid ? '<span class="tag-sus">連射</span>' : ''}${s.quality === 'suspect' ? '<span class="tag-sus">要確認</span>' : ''}</td></tr>`).join('') +
+          (rs.length < per ? `<tr><td>${x.rep}</td><td colspan="4" style="color:var(--sub)">${per - rs.length}発 未射撃</td></tr>` : '');
+        const s = rs[0];
         return `<tr><td>${x.rep}${sc.targets > 1 ? '・的' + x.target : ''}</td>` + (s ? `<td>${(s.sc.react / 1000).toFixed(2)}秒</td><td><span class="chip b-${s.band}">${Math.round(s.predicted)}</span></td><td>${cantText(s.cant).replace('傾き ', '')}</td><td>${s.sc.late ? '<span class="tag-late">時間外</span>' : ''}${s.quality === 'suspect' ? '<span class="tag-sus">要確認</span>' : ''}</td>`
           : '<td colspan="4" style="color:var(--sub)">未射撃</td>') + '</tr>'; }).join('')}</table></div>`;
   }).join('') + '<p class="hint">平均点は時間内かつ「要確認」でない発（連続射撃は連射の発も除く）。反応はブザーから撃発までの時間（誤差は数十ms程度の見込み）。傾きは右が正、0点からの差。' +
@@ -2329,7 +2359,7 @@ async function renderScenAnalysis(sessions) {
   const isStr = !!(cfg && cfg.type === 'string');
   const runs = [...new Set(ds.map(s => s.sc.run))].sort((a, b) => a - b).map(id => {
     const ss = ds.filter(s => s.sc.run === id), meta = runMeta.get(id); const reps = (meta && meta.reps) || (cfg && (cfg.reps || cfg.shots)) || ss.length;
-    const st = scenStats(ss.filter(s => !s.sc.rapid || !isStr), reps); const m = isStr ? stringMetrics(ss, cfg, meta && meta.actions) : null;
+    const st = scenStats(ss.filter(s => !s.sc.rapid || !isStr), reps, cfg && cfg.perRep); const m = isStr ? stringMetrics(ss, cfg, meta && meta.actions) : null;
     return { id, reps, st, m, shooter: ss[0].shooter || '' };
   });
   const sc = (s) => s.quality !== 'suspect' && s.predicted != null && !s.sc.rapid;
@@ -2342,7 +2372,7 @@ async function renderScenAnalysis(sessions) {
   const fmtD = (id) => new Date(id).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   const capOf = (r) => `${fmtD(r.id)}${anaShooter === '*' && r.shooter ? '（' + r.shooter + '）' : ''}　平均${r.st.mean != null ? Math.round(r.st.mean) + '点' : '--'}・` +
     (isStr ? (r.m ? `${r.m.n}/${r.reps}発・合計${r.m.total.toFixed(2)}秒・間隔${r.m.split != null ? r.m.split.toFixed(2) + '秒' : '--'}` : '射撃なし')
-      : `時間内${r.st.inTime}/${r.reps}・反応${r.st.reactMean != null ? (r.st.reactMean / 1000).toFixed(2) + '秒' : '--'}`);
+      : `時間内${r.st.inTime}/${r.st.planned}・反応${r.st.reactMean != null ? (r.st.reactMean / 1000).toFixed(2) + '秒' : '--'}`);
   if (isStr) {
     const g = cfg.goals || {};
     html += `<div class="ana-h">平均点（予測）の推移</div>` + miniLine(runs.map(r => r.st.mean), 0, 100, 'aT1', [settings.bandHigh, settings.bandLow]) +
@@ -2366,7 +2396,7 @@ async function renderScenAnalysis(sessions) {
     return;
   }
   html += `<div class="ana-h">平均点（予測）の推移</div>` + miniLine(runs.map(r => r.st.mean), 0, 100, 'aT1', [settings.bandHigh, settings.bandLow]) +
-    `<div class="ana-h">時間内率（%）の推移</div>` + miniLine(runs.map(r => r.st.inTime / r.reps * 100), 0, 100, 'aT2') +
+    `<div class="ana-h">時間内率（%）の推移</div>` + miniLine(runs.map(r => r.st.inTime / r.st.planned * 100), 0, 100, 'aT2') +
     `<div class="ana-h">平均反応時間（秒）の推移</div>` + miniLine(runs.map(r => r.st.reactMean != null ? r.st.reactMean / 1000 : null), 0, cfg ? Math.max(cfg.parMs / 1000, 0.5) : null, 'aT3', cfg ? [cfg.parMs / 1000] : []) +
     `<div class="ana-cap" id="anaCap">${runs.length ? capOf(runs[runs.length - 1]) + '（最新）' : ''}</div>`;
   // (2) 何発目・的ごと
@@ -2374,7 +2404,7 @@ async function renderScenAnalysis(sessions) {
     return `<tr><td>${label}</td><td>${ss.length}</td><td>${ss.length ? Math.round(it.length / ss.length * 100) + '%' : '--'}</td><td>${it.length ? (mean(it.map(s => s.sc.react)) / 1000).toFixed(2) : '--'}</td><td>${it.filter(sc).length ? Math.round(mean(it.filter(sc).map(s => s.predicted))) : '--'}</td></tr>`; };
   const head = '<tr><th></th><th>発数</th><th>時間内</th><th>反応(秒)</th><th>平均点</th></tr>';
   const reps = [...new Set(ds.map(s => s.sc.rep))].sort((a, b) => a - b);
-  html += `<div class="ana-h">何発目ごと</div><table class="ana">${head}${reps.map(r => rowOf(`${r}発目`, ds.filter(s => s.sc.rep === r))).join('')}</table>`;
+  html += `<div class="ana-h">${cfg && cfg.perRep > 1 ? '何回目ごと（各回の全発。反応はブザーからの時間）' : '何発目ごと'}</div><table class="ana">${head}${reps.map(r => rowOf(`${r}${cfg && cfg.perRep > 1 ? '回目' : '発目'}`, ds.filter(s => s.sc.rep === r))).join('')}</table>`;
   if (cfg && cfg.targets > 1) { const ts = [...new Set(ds.map(s => s.sc.target))].sort((a, b) => a - b);
     html += `<div class="ana-h">的ごと</div><table class="ana">${head}${ts.map(t => rowOf(`的${t}`, ds.filter(s => s.sc.target === t))).join('')}</table>`; }
   // (3) 反応時間と点数
@@ -2544,7 +2574,7 @@ function masalShot(s) {
     cause: { key: gk, label: causeKey(s), severity: sev, magnitudeDeg: q ? r3(q.magnitude, 2) : null, angleDeg: q && q.angle != null ? r3(q.angle, 0) : null },
     cantDeg: r3(s.cant, 1), method: s.method, ref: s.mantis != null ? { score: s.mantis, cause: s.cause === 'その他（自由入力）' ? s.causeFree : (s.cause || '') } : null };
   if (s.sc) Object.assign(o, { tS: r3(s.sc.react / 1000), splitS: s.sc.split != null ? r3(s.sc.split / 1000) : null, target: s.sc.target, late: !!s.sc.late,
-    rapid: !!s.sc.rapid, extra: !!s.sc.extra });
+    rapid: !!s.sc.rapid, extra: !!s.sc.extra, k: s.sc.k || null });
   return o;
 }
 function masalRecords(sess, list) {
@@ -2561,9 +2591,10 @@ function masalRecords(sess, list) {
         firstS: m ? r3(m.first) : null, splitS: m ? r3(m.split) : null, totalS: m ? r3(m.total) : null, reloadS: m ? r3(m.reload) : null, reloadMeasured: m ? m.reloadMeasured : false,
         malfunctionS: m && m.mal ? r3(m.mal) : null, goals: cfg.goals || null, grades: m ? m.grade : null, slideS: cfg.slideS || null };
     } else {
-      const st = scenStats(main, (meta && meta.reps) || cfg.reps);
+      const st = scenStats(main, (meta && meta.reps) || cfg.reps, cfg.perRep);
       summary = { reps: st.reps, shots: st.shot, inTime: st.inTime, scoreMean: r3(st.mean, 1), reactMeanS: st.reactMean != null ? r3(st.reactMean / 1000) : null,
-        reactMaxS: st.reactMax != null ? r3(st.reactMax / 1000) : null, cantMaxDeg: r3(st.cantMax, 1), parS: r3(cfg.parMs / 1000), restS: r3(cfg.restMs / 1000) };
+        reactMaxS: st.reactMax != null ? r3(st.reactMax / 1000) : null, cantMaxDeg: r3(st.cantMax, 1), parS: r3(cfg.parMs / 1000), restS: r3(cfg.restMs / 1000),
+        perRep: st.perRep, plannedShots: st.planned, fullReps: st.full, lastMeanS: st.lastMean != null ? r3(st.lastMean / 1000) : null, splitMeanS: st.splitMean != null ? r3(st.splitMean / 1000) : null };
     }
     out.push({ id: `MaCo:${sess.id}:${id}`, app: 'MaCo', type: 'drill', shooter: masalShooter(first.sc ? first : sess), start: new Date(id).toISOString(),
       eventName: '', eventDate: new Date(id).toISOString().slice(0, 10), condition: masalCondition(first.gun || sess.gun, scen), aborted: !!(meta && meta.aborted),
