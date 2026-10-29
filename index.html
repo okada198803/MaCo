@@ -371,7 +371,7 @@
 // =========================================================
 
 // ==CORE_BEGIN==
-const MACO_VERSION = 'MaCo錬成 2026-10-29';
+const MACO_VERSION = 'MaCo錬成 2026-10-29b';
 // ---- 設定の既定値（検知パラメータは既存の328件の波形で検証した値） ----
 const DEFAULTS = {
   thr: 0.08,        // 撃発候補：加速度差分(G/サンプル)のしきい値
@@ -1496,6 +1496,18 @@ function onDetShot() {
   $('hero').className = 'hero'; $('resCause').textContent = '撃発を検知。採点中…'; $('resTip').textContent = ''; $('resMeta').textContent = '';
 }
 
+// ---- 連射の判定（2026-10-29）：前の発に近い発の点数を参考扱いにするか ----
+// 採点は撃発前400msの動きを使うため、前の発の反動の揺れが残ると狙いと無関係に点が下がる。
+// Glock17 GBB 64発：反動が10dps未満に戻るまで中央0.19秒。採点の窓に残る前の発の揺れ（最大の中央）は間隔0.50秒で63dps、0.55秒21、0.60秒8、0.65秒5。
+// 通常の単発の撃発前400msの最大は中央3.4dps・90%点6.6dps。
+// 判定：間隔0.5秒未満は参考。0.5〜1.0秒は、採点の窓（解析の基準の前400ms）の最大角速度が10dps以上なら参考、未満なら単発として採点。
+const RAPID_MIN_MS = 500, RAPID_CHECK_MS = 1000, RAPID_WIN_DPS = 10;
+function rapidCheck(split, ws, ta) {
+  if (split == null || split >= RAPID_CHECK_MS) return {};
+  let m = 0; for (const x of ws) if (x.t >= ta - 400 && x.t < ta && x.gm != null && x.gm > m) m = x.gm;
+  const winMax = Math.round(m * 10) / 10;
+  return split < RAPID_MIN_MS || winMax >= RAPID_WIN_DPS ? { rapid: true, winMax } : { winMax };
+}
 // ---- 撃発確定 → 採点 → 記録 ----
 function finalizeShot(t0, method = 'auto', meta) {
   const rifle = !!gunProfile(settings.gun).rifle;
@@ -1526,7 +1538,7 @@ function finalizeShot(t0, method = 'auto', meta) {
     sc = { run: scenRun.run, key: scenRun.key, rep: idx, target: (cfg.tmap && cfg.tmap[idx - 1]) || 1, react: Math.round(Math.max(0, rel)),
       late: !!(cfg.limitMs && rel >= cfg.limitMs), split: last ? Math.round(rel - last.sc.react) : null, cfg: scenSnap(cfg) };
     if (idx > cfg.shots) sc.extra = true;                       // 規定の発数を超えた発
-    if (last && rel - last.sc.react < 600) sc.rapid = true;      // 前の発から0.6秒未満：採点の窓に前の発が入るため点数は参考
+    if (last) Object.assign(sc, rapidCheck(rel - last.sc.react, ws, t0 + anaOff));
     if (idx === cfg.shots) scenRun.timers.push(setTimeout(() => finishScenario(false), 1500)); // 規定の発数で終了
   } else if (scenRun) {
     const as = scenAssignDev(t0);
@@ -1536,10 +1548,10 @@ function finalizeShot(t0, method = 'auto', meta) {
     }
     if (as) {
       sc = { run: scenRun.run, key: scenRun.key, rep: as.rep, target: as.target, react: Math.round(as.react), late: as.late, cfg: scenSnap(scenRun.sc) };
-      // 同じ回の何発目か（1回の発数を超えた発は extra）。2発目以降は前の発からの間隔、0.6秒未満は連射（採点の窓に前の発が入るため点数は参考）
+      // 同じ回の何発目か（1回の発数を超えた発は extra）。2発目以降は前の発からの間隔、連射の判定は rapidCheck
       const per = scenRun.sc.perRep || 1, prev = shots.filter(s => !s.deleted && s.sc && s.sc.run === sc.run && s.sc.rep === sc.rep && !s.sc.extra);
       if (prev.length >= per) sc.extra = true;
-      else { sc.k = prev.length + 1; const last = prev[prev.length - 1]; if (last) { sc.split = Math.round(sc.react - last.sc.react); if (sc.split < 600) sc.rapid = true; } }
+      else { sc.k = prev.length + 1; const last = prev[prev.length - 1]; if (last) { sc.split = Math.round(sc.react - last.sc.react); Object.assign(sc, rapidCheck(sc.split, ws, t0 + anaOff)); } }
     }
   }
   session.count++;
@@ -1987,7 +1999,7 @@ function showStringResult(r, list) {
 }
 // 練成1回分の集計。点数の平均は時間内かつ要確認でない発、反応時間は時間内の発
 // 1回に複数発（perRep>1）：規定の発数＝回数×発数。反応は各回の1発目、最終弾は規定の発数をすべて時間内に撃った回の最後の発のブザーからの時間、
-// 間隔は時間内の2発目以降の前の発からの時間。点数の平均は連射（0.6秒未満）の発を除く
+// 間隔は時間内の2発目以降の前の発からの時間。点数の平均は連射（rapidCheck）の発を除く
 function scenStats(list, reps, perRep) {
   const per = perRep || 1;
   const inT = list.filter(s => !s.sc.late), ok = inT.filter(s => s.quality !== 'suspect' && s.predicted != null && !s.sc.rapid);
@@ -2388,7 +2400,7 @@ async function renderScenAnalysis(sessions) {
       html += `<div class="ana-h">的ごと</div><table class="ana">${headS}${ts.map(t => rowS(`的${t}`, ds.filter(s => s.sc.target === t))).join('')}</table>`; }
     const pts = ds.filter(s => sc(s) && s.sc.split != null && !(cfg.reloadAt && s.sc.rep === cfg.reloadAt + 1)).map(s => Object.assign({}, s, { sc: Object.assign({}, s.sc, { react: s.sc.split }) }));
     html += `<div class="ana-h">射撃間隔と点数（●時間内 ○時間外）</div>` + scatterRS(pts, g.split || null) + `<div class="ana-cap" id="anaCap2"></div>` + rsSummary(pts.filter(s => !s.sc.late)).replace(/反応/g, '間隔');
-    html += '<p class="hint">点数は時間内かつ「要確認」でない発で、前の発から0.6秒未満の連射は除く（採点の窓に前の発が入るため）。目標値の点線はMaLIの評価B基準（ドライはスライド操作の時間を加算）。</p>';
+    html += '<p class="hint">点数は時間内かつ「要確認」でない発で、前の発から0.5秒未満、または0.5〜1秒で撃発前400msに前の発の反動の揺れ（10dps以上）が残る発は連射として除く。目標値の点線はMaLIの評価B基準（ドライはスライド操作の時間を加算）。</p>';
     el.innerHTML = html; bindAna();
     el.querySelectorAll('[data-ri]').forEach(c => c.onclick = () => { $('anaCap').textContent = capOf(runs[+c.dataset.ri]); });
     el.querySelectorAll('[data-si]').forEach(c => c.onclick = () => { const s = pts[+c.dataset.si];
