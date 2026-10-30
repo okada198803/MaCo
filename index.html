@@ -371,7 +371,7 @@
 // =========================================================
 
 // ==CORE_BEGIN==
-const MACO_VERSION = 'MaCo錬成 2026-10-29b';
+const MACO_VERSION = 'MaCo錬成 2026-10-30';
 // ---- 設定の既定値（検知パラメータは既存の328件の波形で検証した値） ----
 const DEFAULTS = {
   thr: 0.08,        // 撃発候補：加速度差分(G/サンプル)のしきい値
@@ -1921,6 +1921,10 @@ function startScenario() {
   if (scenRun) return; // 実施中は二重に開始しない
   const sc = scenarioOf(settings.scen); if (!sc) return;
   if (!connected || clockOff == null) { alert('BLE接続後に開始してください。'); return; }
+  // 音の準備（2026-10-30）：iPhoneはバックグラウンド・画面ロック・通知等で音の時計が止まる（suspended/interrupted）。
+  // 止まったまま開始すると、ブザーが鳴らず、時刻の基準が過去になって練成がすぐ終了する（開始が効かない・すぐ終わる事象）。
+  // 開始のタップの中で、動いていない音の時計は作り直す（タップの中なら新しい音の時計を動かせる）。
+  if (audioCtx && audioCtx.state !== 'running') { stopKeepAlive(); try { audioCtx.close(); } catch (e) {} audioCtx = null; }
   ensureAudio();
   const lead = Math.max(1, sc.leadS) * 1000, tl = scenarioTimeline(sc, lead), osc = [];
   let perf0 = performance.now();
@@ -1929,8 +1933,10 @@ function startScenario() {
     // タイムラインの0を音の時計の base とし、それが実際に鳴る画面時刻を perf0 とする（出力遅れを含む）。
     const base = audioCtx.currentTime + 0.05;
     const ts = audioCtx.getOutputTimestamp ? audioCtx.getOutputTimestamp() : null;
-    if (ts && ts.performanceTime > 0) perf0 = ts.performanceTime + (base - ts.contextTime) * 1000;
-    else perf0 = performance.now() + 50 + ((audioCtx.outputLatency || 0) + (audioCtx.baseLatency || 0)) * 1000;
+    const expect = performance.now() + 50 + ((audioCtx.outputLatency || 0) + (audioCtx.baseLatency || 0)) * 1000;
+    perf0 = ts && ts.performanceTime > 0 ? ts.performanceTime + (base - ts.contextTime) * 1000 : expect;
+    // 音の時計の時刻が古い（止まっていた）場合は画面の時計を基準にする（0.5秒以上のずれは異常とみなす）
+    if (!isFinite(perf0) || Math.abs(perf0 - expect) > 500) perf0 = expect;
     perf0 += settings.audioDelayMs || 0; // Bluetoothイヤホンの遅れ：ブザーが耳に届く時刻を基準にする
     tl.forEach(r => {
       scheduleTone(base + r.start / 1000, 1800, 0.4, osc);                                   // 開始：高音1回
@@ -1949,6 +1955,8 @@ function startScenario() {
   startKeepAlive();
   if (voiceOn()) speak(lead >= 2500 ? `${sc.short}を開始します。` : ' ', true); else speak(' ', true); // iOS：タップ操作の中で読み上げを有効にしておく
   scenRun.sc.audioDelayMs = settings.audioDelayMs || 0;
+  // 0.4秒後に音の時計が進んでいなければ知らせる（ブザーが鳴らない）。練成は画面表示と時間計測で続ける
+  if (audioCtx) { const c0 = audioCtx.currentTime, run = scenRun.run; setTimeout(() => { if (scenRun && scenRun.run === run && audioCtx && audioCtx.currentTime - c0 < 0.2) $('resMeta').textContent = 'ブザーが鳴っていません（音が止まっています）。中止して、もう一度「開始」を押してください。'; }, 400); }
   showIdle(); $('resCause').textContent = `${sc.label}：開始ブザーで射撃`; $('resMeta').textContent = audioCtx ? 'iPhoneのマナーモード中は音が出ません。' : 'この環境では音を出せないため、上の表示で合図します。';
   renderScenBar();
 }
@@ -2823,6 +2831,10 @@ $('rosterFile').onchange = (e) => {
   rd.readAsText(f);
 };
 $('btnScen').onclick = () => { if (scenRun) finishScenario(true); else startScenario(); };
+// 練成中にバックグラウンドへ移ったら中止する（iPhoneはタイマー・音・BLEの受信が止まり、時間・回の割当が正しくなくなるため）（2026-10-30）
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && scenRun) { finishScenario(true); $('resMeta').textContent = '画面が切り替わった（バックグラウンド・画面ロック）ため練成を中止しました。\n' + $('resMeta').textContent; }
+});
 $('btnResetSettings').onclick = () => { if (!confirm('設定を初期値に戻します。')) return; settings = Object.assign({}, DEFAULTS); saveSettings(); det.p = settings; det.mode = 'dry'; det.rifle = false; if (session) session.gun = settings.gun; renderSettings(); renderGun(); };
 $('selSession').onchange = (e) => { reviewSessionId = Number(e.target.value); renderReview(); };
 $('btnExportCsv').onclick = exportCsv;
