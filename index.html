@@ -371,7 +371,7 @@
 // =========================================================
 
 // ==CORE_BEGIN==
-const MACO_VERSION = 'MaCo錬成 2026-11-02h';
+const MACO_VERSION = 'MaCo錬成 2026-11-02i';
 // ---- 設定の既定値（検知パラメータは既存の328件の波形で検証した値） ----
 const DEFAULTS = {
   thr: 0.08,        // 撃発候補：加速度差分(G/サンプル)のしきい値
@@ -413,7 +413,6 @@ const DEFAULTS = {
   voiceName: '',    // 読み上げの声（空は自動：拡張・プレミアムの日本語の声を優先）
   voiceRate: 0.95,  // 読み上げの速さ（1.0が標準）
   voicePitch: 1.0,  // 声の高さ（1.0が標準）
-  startAnnounce: false, // audio要素の方式で開始の案内（「〇〇を開始します」）を読む。読み上げのあとに再生位置を合わせ直す（2026-11-02）
   buzzMode: 'web',  // 練成のブザー方式：web＝WebAudio（既定）、html＝audio要素でタイムライン全体のWAVを再生（iPhoneでWebAudioが無音になる場合。2026-11-02）
   audioDelayMs: 0,  // 音の出力遅れ（ms）。Bluetoothイヤホンの遅れ（約100〜300ms）を反応時間から差し引く
   scenSlideS: 1.5,  // ドライの連続射撃：1発あたりのスライド操作の時間（MaLIの目標の射撃間隔・合計時間に加算）
@@ -1937,7 +1936,7 @@ function renderVoiceSelect() {
 try { if (window.speechSynthesis) speechSynthesis.onvoiceschanged = () => renderVoiceSelect(); } catch (e) {}
 function voiceOn() { return settings.voice === 'always' || (settings.voice === 'drill' && !!scenRun); }
 function speakShot(shot) {
-  if (!voiceOn() || (scenRun && scenRun.sc.type === 'string')) return; // 連続射撃は撃発ごとに読まない（射撃の妨げになるため）
+  if (!voiceOn() || scenRun) return; // 練成中は撃発ごとに読まない（射撃の妨げになるため。終了時に結果をまとめて読む。2026-11-02）
   // 文として読ませると抑揚が自然になるため、「です」で終える
   let t = shot.predicted == null ? '採点できませんでした。' : (shot.sc && shot.sc.late ? '時間外、' : '') + Math.round(shot.predicted) + '点です。';
   if (settings.voiceCause && shot.band !== '高') { const gk = guideKeyOf(shot); if (gk && CAUSE_GUIDE[gk] && gk !== 'small' && gk !== 'none') t += CAUSE_GUIDE[gk].title.split('・')[0] + 'の可能性。'; }
@@ -1965,25 +1964,10 @@ function testBuzz() {
   setTimeout(() => { htmlBeep(1200, 0.4).catch(e => { const st2 = $('buzzStat'); if (st2) st2.textContent += ' 別経路の音は再生できませんでした：' + (e && e.name); }); }, 2000);
 }
 
-let scenPending = null; // 開始の案内を読んでいる間（案内が終わってから開始までの秒数を数える）
-function cancelPending() { if (!scenPending) return; clearTimeout(scenPending.timer); scenPending = null; try { speechSynthesis.cancel(); } catch (e) {} showIdle(); }
 function startScenario() {
-  if (scenRun || scenPending) return; // 実施中は二重に開始しない
+  if (scenRun) return; // 実施中は二重に開始しない
   const sc = scenarioOf(settings.scen); if (!sc) return;
   if (!connected || clockOff == null) { alert('BLE接続後に開始してください。'); return; }
-  if (settings.buzzMode === 'html' && settings.startAnnounce && voiceOn() && window.speechSynthesis && sc.leadS >= 1) {
-    // 開始の案内を読み終えてから、開始までの秒数を数えてブザーを鳴らす（案内とブザーを重ねない。2026-11-02）
-    // タップの中で audio要素を一度再生して再生を許可しておく（案内の後に再生を始められるようにする）
-    speak(' ', true); // 11-02e（案内が読めた版）と同じ順序：読み上げの準備、audio要素の再生、案内
-    let a = null; try { a = new Audio(wavUrl(() => 0, 0.3)); a.play().catch(() => {}); } catch (e) {} // 止めずに最後まで再生する（止めると直後の読み上げが消える）
-    const go = () => { if (!scenPending || scenPending.go) return; scenPending.go = true; clearTimeout(scenPending.timer); scenPending = null; try { speechSynthesis.cancel(); } catch (e) {} startScenarioRun(sc, a); };
-    scenPending = { timer: setTimeout(go, 10000) };
-    // 読み上げが始まらない場合（iPhoneで直前の中断の直後に読むと無音になる）は、2秒で案内を諦めて開始する。
-    const startWatch = setTimeout(go, 2000);
-    $('resCause').textContent = `${sc.label}：開始の案内中`; $('resMeta').textContent = '案内が終わってから、開始までの秒数を数えます。もう一度押すと取り消します。';
-    speak(`${sc.short}を開始します。`, true, () => setTimeout(go, 150), () => clearTimeout(startWatch));
-    return;
-  }
   startScenarioRun(sc, null);
 }
 function startScenarioRun(sc, preAud) {
@@ -2827,12 +2811,11 @@ const SET_SPEC = {
     ['cantWarn', '傾きの注意（deg）', 'これ以上の傾きに⚠を付ける（暫定値）', 1, 15, 0.5],
   ],
   setVoice: [
-    ['voice', '結果の読み上げ', '撃発ごとに点数を読み上げ、練成の終了時に結果をまとめて読み上げる（連続射撃は終了時のみ）', 'select', { off: 'しない', drill: '自由練成以外', always: '常に' }],
+    ['voice', '結果の読み上げ', '練成中は撃発ごとに読まず、終了時に結果をまとめて読む。「常に」は自由練成でも撃発ごとに点数を読む', 'select', { off: 'しない', drill: '自由練成以外', always: '常に' }],
     ['voiceRate', '読み上げの速さ', '1.0が標準。小さいほどゆっくり', 0.5, 1.5, 0.05],
     ['voicePitch', '声の高さ', '1.0が標準', 0.5, 1.5, 0.05],
     ['voiceCause', '読み上げに低下要因を含める', '中・低のときのみ。長くなるため次のブザーと重なることがある', 'bool'],
     ['buzzMode', '練成のブザー方式', 'WebAudioで鳴らない場合は「audio要素」。タイムライン全体の音を1つのファイルにして再生する（開始時刻は再生開始から合わせる）', 'select', { web: 'WebAudio（既定）', html: 'audio要素' }],
-    ['startAnnounce', '開始の案内（audio要素の方式）', '「〇〇を開始します」を読み終えてから、開始までの秒数を数えてブザーを鳴らす（案内中にもう一度押すと取り消し）。結果の読み上げは、終了のブザーが鳴り終わってから始める', 'bool'],
     ['audioDelayMs', '音の出力遅れ（ms）', 'ブザーが耳に届くまでの遅れ。反応時間から差し引く', 0, 600, 10],
   ],
   setMisc: [
@@ -2918,10 +2901,9 @@ $('rosterFile').onchange = (e) => {
     } catch (err) { $('rosterStatus').textContent = '名簿を読み込めませんでした（MaLIの設定ファイルを選んでください）'; } e.target.value = ''; };
   rd.readAsText(f);
 };
-$('btnScen').onclick = () => { if (scenPending) cancelPending(); else if (scenRun) finishScenario(true); else startScenario(); };
+$('btnScen').onclick = () => { if (scenRun) finishScenario(true); else startScenario(); };
 // 練成中にバックグラウンドへ移ったら中止する（iPhoneはタイマー・音・BLEの受信が止まり、時間・回の割当が正しくなくなるため）（2026-10-30）
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden && scenPending) cancelPending();
   if (document.hidden && scenRun) { finishScenario(true); $('resMeta').textContent = '画面が切り替わった（バックグラウンド・画面ロック）ため練成を中止しました。\n' + $('resMeta').textContent; }
 });
 $('btnResetSettings').onclick = () => { if (!confirm('設定を初期値に戻します。')) return; settings = Object.assign({}, DEFAULTS); saveSettings(); det.p = settings; det.mode = 'dry'; det.rifle = false; if (session) session.gun = settings.gun; renderSettings(); renderGun(); };
