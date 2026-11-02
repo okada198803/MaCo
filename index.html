@@ -371,7 +371,7 @@
 // =========================================================
 
 // ==CORE_BEGIN==
-const MACO_VERSION = 'MaCo錬成 2026-11-02';
+const MACO_VERSION = 'MaCo錬成 2026-11-02b';
 // ---- 設定の既定値（検知パラメータは既存の328件の波形で検証した値） ----
 const DEFAULTS = {
   thr: 0.08,        // 撃発候補：加速度差分(G/サンプル)のしきい値
@@ -1755,7 +1755,22 @@ function stringLine(m, cfg) {
     (m.mal ? ` ／ 弾づまり対処 ${m.mal.toFixed(2)}秒` : '');
 }
 function ensureAudio() {
-  try { const AC = window.AudioContext || window.webkitAudioContext; if (!audioCtx && AC) audioCtx = new AC(); if (audioCtx && audioCtx.state !== 'running') audioCtx.resume(); } catch (e) {}
+  // iOS：navigator.audioSession を playback にすると、マナーモードや音の区分の影響を受けずに鳴る（iOS 16.4以降。2026-11-02）
+  try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext; if (!audioCtx && AC) audioCtx = new AC();
+    if (audioCtx && audioCtx.state !== 'running') audioCtx.resume();
+    // タップの中で無音を1回鳴らして音の出力を有効にする（iOSの音の解除）
+    if (audioCtx && !audioCtx._unlocked) { const b = audioCtx.createBuffer(1, 1, 22050), n = audioCtx.createBufferSource(); n.buffer = b; n.connect(audioCtx.destination); n.start(0); audioCtx._unlocked = true; }
+  } catch (e) {}
+}
+// 音の確認用：HTMLのaudio要素で鳴らす音（WebAudioと別の経路）。WAVを生成して再生する
+function htmlBeep(freq, sec) {
+  const sr = 22050, n = Math.round(sr * sec), buf = new DataView(new ArrayBuffer(44 + n * 2)), w = (o, t) => { for (let i = 0; i < t.length; i++) buf.setUint8(o + i, t.charCodeAt(i)); };
+  w(0, 'RIFF'); buf.setUint32(4, 36 + n * 2, true); w(8, 'WAVEfmt '); buf.setUint32(16, 16, true); buf.setUint16(20, 1, true); buf.setUint16(22, 1, true);
+  buf.setUint32(24, sr, true); buf.setUint32(28, sr * 2, true); buf.setUint16(32, 2, true); buf.setUint16(34, 16, true); w(36, 'data'); buf.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) buf.setInt16(44 + i * 2, Math.sin(2 * Math.PI * freq * i / sr) * 0.5 * 32767 * Math.min(1, i / 200, (n - i) / 200), true);
+  const a = new Audio(URL.createObjectURL(new Blob([buf.buffer], { type: 'audio/wav' }))); return a.play();
 }
 function scheduleTone(ctxT, freq, dur, list) {
   const o = audioCtx.createOscillator(), g = audioCtx.createGain(); o.type = 'square'; o.frequency.value = freq;
@@ -1918,7 +1933,19 @@ function startKeepAlive() {
 }
 function stopKeepAlive() { if (keepAlive) { try { keepAlive.stop(); keepAlive.disconnect(); } catch (e) {} keepAlive = null; } }
 let keepAlive = null;
-function testBuzz() { ensureAudio(); if (!audioCtx) return; const t = audioCtx.currentTime + 0.1, l = []; scheduleTone(t, 1800, 0.4, l); scheduleTone(t + 1, 950, 0.15, l); scheduleTone(t + 1.23, 950, 0.15, l); }
+function testBuzz() {
+  // 音の時計が動いていなければ作り直す（タップの中）
+  if (audioCtx && audioCtx.state !== 'running') { stopKeepAlive(); try { audioCtx.close(); } catch (e) {} audioCtx = null; }
+  ensureAudio();
+  const st = $('buzzStat') || (() => { const e = document.createElement('div'); e.id = 'buzzStat'; e.className = 'hint'; $('btnTestBuzz').parentNode.after(e); return e; })();
+  if (!audioCtx) { st.textContent = 'この環境ではWebAudioが使えません。'; }
+  else {
+    const t = audioCtx.currentTime + 0.1, l = [], c0 = audioCtx.currentTime; scheduleTone(t, 1800, 0.4, l); scheduleTone(t + 1, 950, 0.15, l); scheduleTone(t + 1.23, 950, 0.15, l);
+    st.textContent = `音の確認中… 状態 ${audioCtx.state} ／ 出力 ${audioCtx.sampleRate}Hz ／ audioSession ${navigator.audioSession ? navigator.audioSession.type : 'なし'}`;
+    setTimeout(() => { st.textContent = `状態 ${audioCtx.state} ／ 時計の進み ${(audioCtx.currentTime - c0).toFixed(2)}秒（0.4前後が正常） ／ audioSession ${navigator.audioSession ? navigator.audioSession.type : 'なし'}。高音1回→低音2回（WebAudio）、そのあと中音1回（別経路）の順に鳴ります。`; }, 400);
+  }
+  setTimeout(() => { htmlBeep(1200, 0.4).catch(e => { const st2 = $('buzzStat'); if (st2) st2.textContent += ' 別経路の音は再生できませんでした：' + (e && e.name); }); }, 2000);
+}
 
 function startScenario() {
   if (scenRun) return; // 実施中は二重に開始しない
