@@ -371,7 +371,7 @@
 // =========================================================
 
 // ==CORE_BEGIN==
-const MACO_VERSION = 'MaCo錬成 2026-11-02g';
+const MACO_VERSION = 'MaCo錬成 2026-11-02h';
 // ---- 設定の既定値（検知パラメータは既存の328件の波形で検証した値） ----
 const DEFAULTS = {
   thr: 0.08,        // 撃発候補：加速度差分(G/サンプル)のしきい値
@@ -1974,10 +1974,11 @@ function startScenario() {
   if (settings.buzzMode === 'html' && settings.startAnnounce && voiceOn() && window.speechSynthesis && sc.leadS >= 1) {
     // 開始の案内を読み終えてから、開始までの秒数を数えてブザーを鳴らす（案内とブザーを重ねない。2026-11-02）
     // タップの中で audio要素を一度再生して再生を許可しておく（案内の後に再生を始められるようにする）
-    let a = null; try { a = new Audio(wavUrl(() => 0, 0.2)); a.play().then(() => a.pause()).catch(() => {}); } catch (e) {}
+    speak(' ', true); // 11-02e（案内が読めた版）と同じ順序：読み上げの準備、audio要素の再生、案内
+    let a = null; try { a = new Audio(wavUrl(() => 0, 0.3)); a.play().catch(() => {}); } catch (e) {} // 止めずに最後まで再生する（止めると直後の読み上げが消える）
     const go = () => { if (!scenPending || scenPending.go) return; scenPending.go = true; clearTimeout(scenPending.timer); scenPending = null; try { speechSynthesis.cancel(); } catch (e) {} startScenarioRun(sc, a); };
     scenPending = { timer: setTimeout(go, 10000) };
-    // 読み上げが始まらない場合（iPhoneで直前の中断の直後に読むと無音になる）は、2秒で案内を諦めて開始する。準備の無音の読み上げは入れない（直後の案内が消えるため）
+    // 読み上げが始まらない場合（iPhoneで直前の中断の直後に読むと無音になる）は、2秒で案内を諦めて開始する。
     const startWatch = setTimeout(go, 2000);
     $('resCause').textContent = `${sc.label}：開始の案内中`; $('resMeta').textContent = '案内が終わってから、開始までの秒数を数えます。もう一度押すと取り消します。';
     speak(`${sc.short}を開始します。`, true, () => setTimeout(go, 150), () => clearTimeout(startWatch));
