@@ -371,7 +371,7 @@
 // =========================================================
 
 // ==CORE_BEGIN==
-const MACO_VERSION = 'MaCo錬成 2026-10-30b';
+const MACO_VERSION = 'MaCo錬成 2026-11-02';
 // ---- 設定の既定値（検知パラメータは既存の328件の波形で検証した値） ----
 const DEFAULTS = {
   thr: 0.08,        // 撃発候補：加速度差分(G/サンプル)のしきい値
@@ -385,6 +385,7 @@ const DEFAULTS = {
   holdMaxGbb: 6,    // 同（ガスブローバック。2026-10-30）：片手射撃で本物の撃発が4.0〜4.5で棄却された。GBBは反動の条件があり、6でも2セッションで誤検知なし
   holdMin: 0.5,     // 照準の保持：同じ中央値がこの値未満なら手で保持していない（台に置いた状態等）とみなし撃発としない
   orientMax: 45,    // 銃の向き：重力方向が据銃時の向き（M5のZ軸）から この角度(deg)以上ずれていれば撃発とみなさない（置いた・横倒し等）
+  mountFlip: false, // M5の前後逆取り付け：true＝Z軸まわり180°。受信直後に X・Y の加速度と角速度の符号を反転して既存の取り付けに揃える（2026-11-02）
   mountUp: false,   // M5の取り付けの向き：false＝据銃時に az≈-1G（既存の取り付け）、true＝上下逆（az≈+1G）
   holdRecent: 2.6,
   rifleShockMin: 0.9, // 小銃GBB：撃発とみなす衝撃（加速度差分の最大、G）。実射28発の最小0.95、構え・持ち替え等の衝撃は撃発前の動きで棄却（620秒で誤検知0）
@@ -2166,13 +2167,14 @@ function rifleAnaOff(t0, bias) {
 }
 function onImu(ev) {
   const dv = ev.target.value; if (dv.byteLength < PACKET_SIZE) return;
-  parsePackets(dv).forEach(raw => {
+  parsePackets(dv).forEach(rawS => {
+    const raw = settings.mountFlip ? Object.assign({}, rawS, { gx: -rawS.gx, gy: -rawS.gy, ax: -rawS.ax, ay: -rawS.ay }) : rawS;
     updateClock(raw.t);
     if (decim.factor == null || decim.factor > 1) {
       hiBuf.push(raw);
       if (hiBuf.length > 64 && hiBuf[0].t < raw.t - HI_BUF_MS) hiBuf.splice(0, hiBuf.findIndex(x => x.t >= raw.t - HI_BUF_MS));
     } else if (hiBuf.length) hiBuf = [];
-    if (settings.rawRecord) { rawBuf.push(raw); if (rawBuf.length >= 3000 * (decim.factor || 1)) flushRaw(); } // 連続生データは受信した周期のまま保存
+    if (settings.rawRecord) { rawBuf.push(rawS); if (rawBuf.length >= 3000 * (decim.factor || 1)) flushRaw(); } // 連続生データは受信した周期のまま保存
     decim.push(raw).forEach(onSample);
   });
 }
@@ -2677,7 +2679,7 @@ async function exportCsv() {
         s.cant != null ? s.cant.toFixed(2) : '', s.sc && scenCfg(s.sc) ? scenCfg(s.sc).short.replace(/[,"]/g, ' ') : '', s.sc ? s.sc.rep : '', s.sc ? s.sc.target : '', s.sc ? s.sc.react : '', s.sc ? (s.sc.late ? '時間外' : '時間内') : '', (s.shooter || '').replace(/[,"]/g, ' '), s.sc && s.sc.split != null ? s.sc.split : '', (s.shooterCode || '').replace(/[,"]/g, ' '), (s.shooterUnit || '').replace(/[,"]/g, ' '), s.srcHz || '', s.t0Shift != null ? s.t0Shift.toFixed(1) : '', s.anaOff ? s.anaOff.toFixed(1) : ''].join(','));
     }
     if (!rows.length) { alert('生波形が見つからず、CSVを作れませんでした。\n保存状況：ショット' + all.length + '件、生波形あり0件。\n「設定」で連続生データを保存しておくと、生波形から再構築できます。'); return; }
-    const bias = `# 静止バイアス(dps): GyroX=${b0.gx.toFixed(3)}, GyroY=${b0.gy.toFixed(3)}, GyroZ=${b0.gz.toFixed(3)}, 版=${MACO_VERSION}\n`;
+    const bias = `# 静止バイアス(dps): GyroX=${b0.gx.toFixed(3)}, GyroY=${b0.gy.toFixed(3)}, GyroZ=${b0.gz.toFixed(3)}, 版=${MACO_VERSION}${settings.mountFlip ? ', 前後逆取り付け(X・Y反転済み)' : ''}\n`;
     openExportSheet(`maco_train_${sid}.csv`, bias + header + rows.join('\n'), `${rows.length}発を出力${skipped ? '（生波形なしで' + skipped + '発を除外）' : ''}`);
   } catch (e) { alert('CSVの作成に失敗しました: ' + (e && e.message)); }
   finally { $('btnExportCsv').textContent = 'CSV 共有・保存'; }
@@ -2714,6 +2716,7 @@ const SET_SPEC = {
     ['suspectPost', '要確認：撃発後の動き（dps）', 'これ以上は記録するが「要確認」を付け集計から除く', 5, 100, 5],
     ['holdMax', '棄却：照準が安定していない（dps）', '撃発前3秒の角速度の中央値がこれ以上なら撃発とみなさない（本物の撃発は最大3.0、誤検知は4.5以上）', 2, 20, 0.5],
     ['orientMax', '棄却：銃の向き（deg）', '撃発直前の重力方向が据銃時の向きからこの角度以上ずれていれば撃発とみなさない（置いた・横倒し等）。本物の撃発は最大22°', 20, 90, 5],
+    ['mountFlip', 'M5を前後逆に取り付けている', '端子側が銃口向きの取り付け。X・Yの符号を反転して従来の向きに揃える。切り替えたら静止バイアスと傾きの0点を記録し直す。連続生データはセンサー値のまま保存（再生時も同じ設定で反転）', 'bool'],
     ['mountUp', 'M5を上下逆に取り付けている', '据銃時にM5の画面が上を向く取り付け（既存は画面が下向き）', 'bool'],
     ['rifleShockMin', '小銃GBB：撃発の衝撃（G）', '撃発の衝撃がこれ未満なら撃発としない。実射28発の最小0.95G', 0, 3, 0.05],
     ['gbbPeakMin', '棄却：GBBの衝撃が弱い（G）', '撃発の衝撃がこれ未満なら撃発としない（ガス不足・弾切れ等）。本物の撃発は0.96G以上', 0, 2, 0.05],
