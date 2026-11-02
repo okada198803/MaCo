@@ -371,7 +371,7 @@
 // =========================================================
 
 // ==CORE_BEGIN==
-const MACO_VERSION = 'MaCo錬成 2026-11-02c';
+const MACO_VERSION = 'MaCo錬成 2026-11-02d';
 // ---- 設定の既定値（検知パラメータは既存の328件の波形で検証した値） ----
 const DEFAULTS = {
   thr: 0.08,        // 撃発候補：加速度差分(G/サンプル)のしきい値
@@ -1971,6 +1971,8 @@ function startScenario() {
   if (audioCtx && audioCtx.state !== 'running') { stopKeepAlive(); try { audioCtx.close(); } catch (e) {} audioCtx = null; }
   ensureAudio();
   const lead = Math.max(1, sc.leadS) * 1000, tl = scenarioTimeline(sc, lead), osc = [];
+  // 読み上げの開始が音声の出力を奪うことがあるため、読み上げの準備（無音）は音の再生より前に行う（2026-11-02）。audio要素の方式では開始の案内は読まない
+  speak(' ', true);
   let perf0 = performance.now();
   let htmlAud = null;
   if (settings.buzzMode === 'html') {
@@ -1999,9 +2001,16 @@ function startScenario() {
   else at(tl[tl.length - 1].end + settings.scenLateMs + 1200, () => finishScenario(false));
   if (det.state !== 'ARMED') det.rearm();
   scenRun.tick = setInterval(renderScenBar, 100);
+  // audio要素の方式：読み上げ等で再生が止められた・ずれた場合に、現在の位置へ戻して再開する（iPhoneで声のあとにブザーが消える対策）
+  if (htmlAud) scenRun.watch = setInterval(() => {
+    const a = htmlAud; if (!scenRun || scenRun.html !== a || a.ended) return;
+    const exp = (performance.now() - scenRun.perf0 + (settings.audioDelayMs || 0)) / 1000;
+    if (exp >= a.duration) return;
+    if (a.paused) { scenRun.recov = (scenRun.recov || 0) + 1; a.play().then(() => { try { a.currentTime = Math.max(0, (performance.now() - scenRun.perf0 + (settings.audioDelayMs || 0)) / 1000); } catch (e) {} }).catch(() => {}); }
+  }, 100);
   showActBar(true);
   if (settings.buzzMode !== 'html') startKeepAlive();
-  if (voiceOn()) speak(lead >= 2500 ? `${sc.short}を開始します。` : ' ', true); else speak(' ', true); // iOS：タップ操作の中で読み上げを有効にしておく
+  if (voiceOn() && settings.buzzMode !== 'html') speak(lead >= 2500 ? `${sc.short}を開始します。` : ' ', true);
   scenRun.sc.audioDelayMs = settings.audioDelayMs || 0;
   // 0.4秒後に音の時計が進んでいなければ知らせる（ブザーが鳴らない）。練成は画面表示と時間計測で続ける
   if (audioCtx && settings.buzzMode !== 'html') { const c0 = audioCtx.currentTime, run = scenRun.run; setTimeout(() => { if (scenRun && scenRun.run === run && audioCtx && audioCtx.currentTime - c0 < 0.2) $('resMeta').textContent = 'ブザーが鳴っていません（音が止まっています）。中止して、もう一度「開始」を押してください。'; }, 400); }
@@ -2012,12 +2021,12 @@ function finishScenario(aborted) {
   const r = scenRun; if (!r) return;
   if (r.act) actEnd(r.act.type);
   if (r.html) { try { r.html.pause(); } catch (e) {} }
-  r.timers.forEach(clearTimeout); clearInterval(r.tick); clearInterval(r.actTick);
+  r.timers.forEach(clearTimeout); clearInterval(r.tick); clearInterval(r.watch); clearInterval(r.actTick);
   if (aborted || r.sc.type === 'string') r.osc.forEach(o => { try { o.stop(); o.disconnect(); } catch (e) {} });
   scenRun = null; showActBar(false);
   const now = performance.now() - r.perf0;
   const tl = aborted ? r.tl.filter(x => x.start <= now) : r.tl;
-  session.runs = session.runs || []; session.runs.push({ run: r.run, key: r.key, reps: r.sc.type === 'string' ? r.sc.shots : tl.length, aborted: !!aborted, cfg: scenSnap(r.sc), actions: r.actions });
+  session.runs = session.runs || []; session.runs.push({ run: r.run, key: r.key, reps: r.sc.type === 'string' ? r.sc.shots : tl.length, aborted: !!aborted, recov: r.recov || 0, cfg: scenSnap(r.sc), actions: r.actions });
   persistSession();
   const list = shots.filter(s => !s.deleted && s.sc && s.sc.run === r.run && !s.sc.extra);
   stopKeepAlive();
