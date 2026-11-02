@@ -371,7 +371,7 @@
 // =========================================================
 
 // ==CORE_BEGIN==
-const MACO_VERSION = 'MaCo錬成 2026-11-02d';
+const MACO_VERSION = 'MaCo錬成 2026-11-02e';
 // ---- 設定の既定値（検知パラメータは既存の328件の波形で検証した値） ----
 const DEFAULTS = {
   thr: 0.08,        // 撃発候補：加速度差分(G/サンプル)のしきい値
@@ -413,6 +413,7 @@ const DEFAULTS = {
   voiceName: '',    // 読み上げの声（空は自動：拡張・プレミアムの日本語の声を優先）
   voiceRate: 0.95,  // 読み上げの速さ（1.0が標準）
   voicePitch: 1.0,  // 声の高さ（1.0が標準）
+  startAnnounce: false, // audio要素の方式で開始の案内（「〇〇を開始します」）を読む。読み上げのあとに再生位置を合わせ直す（2026-11-02）
   buzzMode: 'web',  // 練成のブザー方式：web＝WebAudio（既定）、html＝audio要素でタイムライン全体のWAVを再生（iPhoneでWebAudioが無音になる場合。2026-11-02）
   audioDelayMs: 0,  // 音の出力遅れ（ms）。Bluetoothイヤホンの遅れ（約100〜300ms）を反応時間から差し引く
   scenSlideS: 1.5,  // ドライの連続射撃：1発あたりのスライド操作の時間（MaLIの目標の射撃間隔・合計時間に加算）
@@ -1912,12 +1913,13 @@ function pickVoice() {
   const vs = jaVoices(); if (!vs.length) return null;
   return vs.find(v => v.name === settings.voiceName) || vs.slice().sort((a, b) => voiceScore(b) - voiceScore(a))[0];
 }
-function speak(text, interrupt) {
+function speak(text, interrupt, onEnd) {
   try {
     if (!window.speechSynthesis || text == null) return;
     if (interrupt) speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text); u.lang = 'ja-JP'; u.rate = settings.voiceRate || 1; u.pitch = settings.voicePitch || 1; u.volume = 1;
     const v = pickVoice(); if (v) u.voice = v;
+    if (onEnd) { u.onend = onEnd; u.onerror = onEnd; }
     speechSynthesis.speak(u);
   } catch (e) {}
 }
@@ -2011,6 +2013,13 @@ function startScenario() {
   showActBar(true);
   if (settings.buzzMode !== 'html') startKeepAlive();
   if (voiceOn() && settings.buzzMode !== 'html') speak(lead >= 2500 ? `${sc.short}を開始します。` : ' ', true);
+  else if (voiceOn() && htmlAud && settings.startAnnounce && lead >= 2500) {
+    // 読み上げが終わったら、audio要素の再生を現在の位置に合わせ直す（止められていたら再開する）
+    const a = htmlAud, resync = () => { if (!scenRun || scenRun.html !== a || a.ended) return; const exp = (performance.now() - scenRun.perf0 + (settings.audioDelayMs || 0)) / 1000; if (exp >= a.duration) return;
+      const seek = () => { try { if (Math.abs(a.currentTime - exp) > 0.1) a.currentTime = Math.max(0, exp); } catch (e) {} };
+      if (a.paused) { scenRun.recov = (scenRun.recov || 0) + 1; a.play().then(seek).catch(() => {}); } else seek(); };
+    speak(`${sc.short}を開始します。`, true, () => setTimeout(resync, 50));
+  }
   scenRun.sc.audioDelayMs = settings.audioDelayMs || 0;
   // 0.4秒後に音の時計が進んでいなければ知らせる（ブザーが鳴らない）。練成は画面表示と時間計測で続ける
   if (audioCtx && settings.buzzMode !== 'html') { const c0 = audioCtx.currentTime, run = scenRun.run; setTimeout(() => { if (scenRun && scenRun.run === run && audioCtx && audioCtx.currentTime - c0 < 0.2) $('resMeta').textContent = 'ブザーが鳴っていません（音が止まっています）。中止して、もう一度「開始」を押してください。'; }, 400); }
@@ -2807,6 +2816,7 @@ const SET_SPEC = {
     ['voicePitch', '声の高さ', '1.0が標準', 0.5, 1.5, 0.05],
     ['voiceCause', '読み上げに低下要因を含める', '中・低のときのみ。長くなるため次のブザーと重なることがある', 'bool'],
     ['buzzMode', '練成のブザー方式', 'WebAudioで鳴らない場合は「audio要素」。タイムライン全体の音を1つのファイルにして再生する（開始時刻は再生開始から合わせる）', 'select', { web: 'WebAudio（既定）', html: 'audio要素' }],
+    ['startAnnounce', '開始の案内（audio要素の方式）', '「〇〇を開始します」を読む。読み上げのあとにブザーの再生位置を合わせ直す。ブザーが消える場合は切る（開始までの秒数が2.5秒以上のときのみ）', 'bool'],
     ['audioDelayMs', '音の出力遅れ（ms）', 'ブザーが耳に届くまでの遅れ。反応時間から差し引く', 0, 600, 10],
   ],
   setMisc: [
