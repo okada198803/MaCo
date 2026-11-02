@@ -371,7 +371,7 @@
 // =========================================================
 
 // ==CORE_BEGIN==
-const MACO_VERSION = 'MaCo錬成 2026-11-02b';
+const MACO_VERSION = 'MaCo錬成 2026-11-02c';
 // ---- 設定の既定値（検知パラメータは既存の328件の波形で検証した値） ----
 const DEFAULTS = {
   thr: 0.08,        // 撃発候補：加速度差分(G/サンプル)のしきい値
@@ -413,6 +413,7 @@ const DEFAULTS = {
   voiceName: '',    // 読み上げの声（空は自動：拡張・プレミアムの日本語の声を優先）
   voiceRate: 0.95,  // 読み上げの速さ（1.0が標準）
   voicePitch: 1.0,  // 声の高さ（1.0が標準）
+  buzzMode: 'web',  // 練成のブザー方式：web＝WebAudio（既定）、html＝audio要素でタイムライン全体のWAVを再生（iPhoneでWebAudioが無音になる場合。2026-11-02）
   audioDelayMs: 0,  // 音の出力遅れ（ms）。Bluetoothイヤホンの遅れ（約100〜300ms）を反応時間から差し引く
   scenSlideS: 1.5,  // ドライの連続射撃：1発あたりのスライド操作の時間（MaLIの目標の射撃間隔・合計時間に加算）
   gbbRest1: 2,      // ガスブローバック時の1コ的の休止（秒。スライド操作が要らないため短縮）
@@ -1765,6 +1766,19 @@ function ensureAudio() {
   } catch (e) {}
 }
 // 音の確認用：HTMLのaudio要素で鳴らす音（WebAudioと別の経路）。WAVを生成して再生する
+function wavUrl(fn, sec) { // fn(i, sr) → -1〜1 の波形からWAVのURLを作る
+  const sr = 22050, n = Math.round(sr * sec), buf = new DataView(new ArrayBuffer(44 + n * 2)), w = (o, t) => { for (let i = 0; i < t.length; i++) buf.setUint8(o + i, t.charCodeAt(i)); };
+  w(0, 'RIFF'); buf.setUint32(4, 36 + n * 2, true); w(8, 'WAVEfmt '); buf.setUint32(16, 16, true); buf.setUint16(20, 1, true); buf.setUint16(22, 1, true);
+  buf.setUint32(24, sr, true); buf.setUint32(28, sr * 2, true); buf.setUint16(32, 2, true); buf.setUint16(34, 16, true); w(36, 'data'); buf.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) buf.setInt16(44 + i * 2, Math.max(-1, Math.min(1, fn(i, sr))) * 32767, true);
+  return URL.createObjectURL(new Blob([buf.buffer], { type: 'audio/wav' }));
+}
+// 練成のタイムライン全体（開始：高音1回、終了：低音2回）を1つのWAVにする
+function timelineWav(tl) {
+  const ev = []; tl.forEach(r => { ev.push([r.start, 1800, 400]); if (isFinite(r.end)) { ev.push([r.end, 950, 150]); ev.push([r.end + 230, 950, 150]); } });
+  const total = Math.max(...ev.map(e => e[0] + e[2])) / 1000 + 1;
+  return wavUrl((i, sr) => { const t = i / sr * 1000; for (const [st, f, d] of ev) { if (t >= st && t < st + d) { const x = t - st; return Math.sign(Math.sin(2 * Math.PI * f * x / 1000)) * 0.35 * Math.min(1, x / 5, (d - x) / 20); } } return 0; }, total);
+}
 function htmlBeep(freq, sec) {
   const sr = 22050, n = Math.round(sr * sec), buf = new DataView(new ArrayBuffer(44 + n * 2)), w = (o, t) => { for (let i = 0; i < t.length; i++) buf.setUint8(o + i, t.charCodeAt(i)); };
   w(0, 'RIFF'); buf.setUint32(4, 36 + n * 2, true); w(8, 'WAVEfmt '); buf.setUint32(16, 16, true); buf.setUint16(20, 1, true); buf.setUint16(22, 1, true);
@@ -1958,7 +1972,11 @@ function startScenario() {
   ensureAudio();
   const lead = Math.max(1, sc.leadS) * 1000, tl = scenarioTimeline(sc, lead), osc = [];
   let perf0 = performance.now();
-  if (audioCtx) {
+  let htmlAud = null;
+  if (settings.buzzMode === 'html') {
+    perf0 = performance.now() + 150 + (settings.audioDelayMs || 0);
+    try { htmlAud = new Audio(timelineWav(tl)); const a0 = htmlAud; a0.addEventListener('playing', () => { if (scenRun && scenRun.html === a0) scenRun.perf0 = performance.now() - a0.currentTime * 1000 + (settings.audioDelayMs || 0); }, { once: true }); a0.play().catch(e => { $('resMeta').textContent = 'ブザー（audio要素）を再生できませんでした：' + (e && e.name); }); } catch (e) {}
+  } else if (audioCtx) {
     // 音の時計（AudioContext）でブザーを予約する（画面の処理が混んでも時刻がずれない）。
     // タイムラインの0を音の時計の base とし、それが実際に鳴る画面時刻を perf0 とする（出力遅れを含む）。
     const base = audioCtx.currentTime + 0.05;
@@ -1973,7 +1991,7 @@ function startScenario() {
       if (isFinite(r.end)) { scheduleTone(base + r.end / 1000, 950, 0.15, osc); scheduleTone(base + r.end / 1000 + 0.23, 950, 0.15, osc); } // 終了：低音2回（連続射撃は制限時間がある場合のみ）
     });
   }
-  scenRun = { key: settings.scen, sc, tl, perf0, osc, run: Date.now(), timers: [], actions: [], act: null };
+  scenRun = { key: settings.scen, sc, tl, perf0, osc, html: htmlAud, run: Date.now(), timers: [], actions: [], act: null };
   const at = (ms, fn) => scenRun.timers.push(setTimeout(fn, Math.max(0, perf0 + ms - performance.now())));
   // 各回の開始時、スライド操作待ち等のままなら待機に戻す（休止中の操作が短くても次の撃発を取りこぼさない）
   tl.forEach(r => at(r.start - 30, () => { if (det && !['ARMED', 'PENDING', 'CONFIRM', 'FIRED'].includes(det.state)) det.rearm(); }));
@@ -1982,17 +2000,18 @@ function startScenario() {
   if (det.state !== 'ARMED') det.rearm();
   scenRun.tick = setInterval(renderScenBar, 100);
   showActBar(true);
-  startKeepAlive();
+  if (settings.buzzMode !== 'html') startKeepAlive();
   if (voiceOn()) speak(lead >= 2500 ? `${sc.short}を開始します。` : ' ', true); else speak(' ', true); // iOS：タップ操作の中で読み上げを有効にしておく
   scenRun.sc.audioDelayMs = settings.audioDelayMs || 0;
   // 0.4秒後に音の時計が進んでいなければ知らせる（ブザーが鳴らない）。練成は画面表示と時間計測で続ける
-  if (audioCtx) { const c0 = audioCtx.currentTime, run = scenRun.run; setTimeout(() => { if (scenRun && scenRun.run === run && audioCtx && audioCtx.currentTime - c0 < 0.2) $('resMeta').textContent = 'ブザーが鳴っていません（音が止まっています）。中止して、もう一度「開始」を押してください。'; }, 400); }
+  if (audioCtx && settings.buzzMode !== 'html') { const c0 = audioCtx.currentTime, run = scenRun.run; setTimeout(() => { if (scenRun && scenRun.run === run && audioCtx && audioCtx.currentTime - c0 < 0.2) $('resMeta').textContent = 'ブザーが鳴っていません（音が止まっています）。中止して、もう一度「開始」を押してください。'; }, 400); }
   showIdle(); $('resCause').textContent = `${sc.label}：開始ブザーで射撃`; $('resMeta').textContent = audioCtx ? 'iPhoneのマナーモード中は音が出ません。' : 'この環境では音を出せないため、上の表示で合図します。';
   renderScenBar();
 }
 function finishScenario(aborted) {
   const r = scenRun; if (!r) return;
   if (r.act) actEnd(r.act.type);
+  if (r.html) { try { r.html.pause(); } catch (e) {} }
   r.timers.forEach(clearTimeout); clearInterval(r.tick); clearInterval(r.actTick);
   if (aborted || r.sc.type === 'string') r.osc.forEach(o => { try { o.stop(); o.disconnect(); } catch (e) {} });
   scenRun = null; showActBar(false);
@@ -2778,6 +2797,7 @@ const SET_SPEC = {
     ['voiceRate', '読み上げの速さ', '1.0が標準。小さいほどゆっくり', 0.5, 1.5, 0.05],
     ['voicePitch', '声の高さ', '1.0が標準', 0.5, 1.5, 0.05],
     ['voiceCause', '読み上げに低下要因を含める', '中・低のときのみ。長くなるため次のブザーと重なることがある', 'bool'],
+    ['buzzMode', '練成のブザー方式', 'WebAudioで鳴らない場合は「audio要素」。タイムライン全体の音を1つのファイルにして再生する（開始時刻は再生開始から合わせる）', 'select', { web: 'WebAudio（既定）', html: 'audio要素' }],
     ['audioDelayMs', '音の出力遅れ（ms）', 'ブザーが耳に届くまでの遅れ。反応時間から差し引く', 0, 600, 10],
   ],
   setMisc: [
