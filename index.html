@@ -177,6 +177,12 @@
   .chip.b-高 { background: #12301f; color: var(--good); } .chip.b-中 { background: #3a2f0d; color: var(--warn); } .chip.b-低 { background: #3a1616; color: var(--bad); }
 
   /* 設定 */
+  /* 設定：項目ごとに折りたたむ（見出しをタップで開閉。2026-11-12） */
+  #viewSettings .panel.acc > h2 { cursor: pointer; display: flex; justify-content: space-between; align-items: center; margin: 0; user-select: none; -webkit-user-select: none; }
+  #viewSettings .panel.acc > h2::after { content: '›'; font-size: 20px; color: var(--sub); transition: transform .15s; transform: rotate(90deg); }
+  #viewSettings .panel.acc.open > h2::after { transform: rotate(-90deg); }
+  #viewSettings .panel.acc > .acc-body { display: none; margin-top: 8px; }
+  #viewSettings .panel.acc.open > .acc-body { display: block; }
   .set-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--border); }
   .set-row:last-child { border-bottom: none; }
   .set-row .sl { font-size: 13px; line-height: 1.3; } .set-row .sl small { display: block; color: var(--sub); font-size: 11px; margin-top: 2px; }
@@ -371,7 +377,7 @@
 // =========================================================
 
 // ==CORE_BEGIN==
-const MACO_VERSION = 'MaCo錬成 2026-11-02i';
+const MACO_VERSION = 'MaCo錬成 2026-11-12';
 // ---- 設定の既定値（検知パラメータは既存の328件の波形で検証した値） ----
 const DEFAULTS = {
   thr: 0.08,        // 撃発候補：加速度差分(G/サンプル)のしきい値
@@ -2844,6 +2850,19 @@ function renderSettings() {
   });
   renderCalib(); renderDiag(); renderCantStatus(); renderVoiceSelect();
 }
+// 設定の各項目（見出し）をタップで開閉する。開閉の状態は端末に覚えておく（2026-11-12）
+(function () {
+  let open = {}; try { open = JSON.parse(lsGet('maco_set_open') || '{}'); } catch (e) {}
+  document.querySelectorAll('#viewSettings .panel').forEach(pn => {
+    const h = pn.querySelector(':scope > h2'); if (!h) return;
+    const body = document.createElement('div'); body.className = 'acc-body';
+    while (h.nextSibling) body.appendChild(h.nextSibling);
+    pn.appendChild(body); pn.classList.add('acc'); const key = h.textContent.trim();
+    if (open[key]) pn.classList.add('open');
+    h.setAttribute('role', 'button'); h.setAttribute('aria-expanded', pn.classList.contains('open'));
+    h.onclick = () => { const o = pn.classList.toggle('open'); h.setAttribute('aria-expanded', o); open[key] = o; lsSet('maco_set_open', JSON.stringify(open)); };
+  });
+})();
 function renderDiag() {
   const el = $('diagText'); if (!el || !det) return;
   const fmt = (r) => `${new Date(r.wall).toLocaleTimeString('ja-JP')} ピーク${r.peak.toFixed(2)}G ／ 衝撃時${r.gmax.toFixed(0)}dps ／ 前${r.preMax != null ? r.preMax.toFixed(0) : '-'}dps 後${r.postMax != null ? r.postMax.toFixed(0) : '-'}dps ／ 幅${r.width}${r.holdMed != null ? ` ／ 保持${r.holdMed.toFixed(1)}dps` : ''}<br>　→ ${r.reason}`;
