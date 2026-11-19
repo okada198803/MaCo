@@ -377,7 +377,7 @@
 // =========================================================
 
 // ==CORE_BEGIN==
-const MACO_VERSION = 'MaCo錬成 2026-11-12';
+const MACO_VERSION = 'MaCo錬成 2026-11-19';
 // ---- 設定の既定値（検知パラメータは既存の328件の波形で検証した値） ----
 const DEFAULTS = {
   thr: 0.08,        // 撃発候補：加速度差分(G/サンプル)のしきい値
@@ -1989,7 +1989,7 @@ function startScenarioRun(sc, preAud) {
   let htmlAud = null;
   if (settings.buzzMode === 'html') {
     perf0 = performance.now() + 150 + (settings.audioDelayMs || 0);
-    try { if (preAud) { preAud.src = timelineWav(tl); htmlAud = preAud; } else htmlAud = new Audio(timelineWav(tl)); const a0 = htmlAud; a0.addEventListener('playing', () => { if (scenRun && scenRun.html === a0) scenRun.perf0 = performance.now() - a0.currentTime * 1000 + (settings.audioDelayMs || 0); }, { once: true }); a0.play().catch(e => { $('resMeta').textContent = 'ブザー（audio要素）を再生できませんでした：' + (e && e.name); }); } catch (e) {}
+    try { if (preAud) { preAud.src = timelineWav(tl); htmlAud = preAud; } else htmlAud = new Audio(timelineWav(tl)); const a0 = htmlAud; a0.addEventListener('playing', () => { if (scenRun && scenRun.html === a0) { const np = performance.now() - a0.currentTime * 1000 + (settings.audioDelayMs || 0); scenRun.shiftMs = Math.round(np - scenRun.perf0); scenRun.perf0 = np; } }, { once: true }); a0.play().catch(e => { $('resMeta').textContent = 'ブザー（audio要素）を再生できませんでした：' + (e && e.name); }); } catch (e) {}
   } else if (audioCtx) {
     // 音の時計（AudioContext）でブザーを予約する（画面の処理が混んでも時刻がずれない）。
     // タイムラインの0を音の時計の base とし、それが実際に鳴る画面時刻を perf0 とする（出力遅れを含む）。
@@ -2006,7 +2006,9 @@ function startScenarioRun(sc, preAud) {
     });
   }
   scenRun = { key: settings.scen, sc, tl, perf0, osc, html: htmlAud, run: Date.now(), timers: [], actions: [], act: null };
-  const at = (ms, fn) => scenRun.timers.push(setTimeout(fn, Math.max(0, perf0 + ms - performance.now())));
+  // 予定の処理（再待機・終了）は、発火の時点の時間の基準（scenRun.perf0）で判定し直す。audio要素の方式では再生が始まった時刻で基準が後ろにずれるため、
+  // 開始時の基準のままだと練成が早く終わり、最後の回の撃発が練成外として記録される（2026-11-19）
+  const run0 = scenRun, at = (ms, fn) => { const arm = () => run0.timers.push(setTimeout(() => { if (scenRun !== run0) return; const rem = run0.perf0 + ms - performance.now(); if (rem > 20) arm(); else fn(); }, Math.max(0, run0.perf0 + ms - performance.now()))); arm(); };
   // 各回の開始時、スライド操作待ち等のままなら待機に戻す（休止中の操作が短くても次の撃発を取りこぼさない）
   tl.forEach(r => at(r.start - 30, () => { if (det && !['ARMED', 'PENDING', 'CONFIRM', 'FIRED'].includes(det.state)) det.rearm(); }));
   if (sc.type === 'string') at(tl[0].start + (sc.limitMs ? sc.limitMs + settings.scenLateMs + 1200 : 180000), () => finishScenario(false)); // 制限時間なしは3分で打ち切り
@@ -2041,7 +2043,7 @@ function finishScenario(aborted) {
   scenRun = null; showActBar(false);
   const now = performance.now() - r.perf0;
   const tl = aborted ? r.tl.filter(x => x.start <= now) : r.tl;
-  session.runs = session.runs || []; session.runs.push({ run: r.run, key: r.key, reps: r.sc.type === 'string' ? r.sc.shots : tl.length, aborted: !!aborted, recov: r.recov || 0, cfg: scenSnap(r.sc), actions: r.actions });
+  session.runs = session.runs || []; session.runs.push({ run: r.run, key: r.key, reps: r.sc.type === 'string' ? r.sc.shots : tl.length, aborted: !!aborted, recov: r.recov || 0, shiftMs: r.shiftMs || 0, cfg: scenSnap(r.sc), actions: r.actions });
   persistSession();
   const list = shots.filter(s => !s.deleted && s.sc && s.sc.run === r.run && !s.sc.extra);
   stopKeepAlive();
