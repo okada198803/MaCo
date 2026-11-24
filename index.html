@@ -377,7 +377,7 @@
 // =========================================================
 
 // ==CORE_BEGIN==
-const MACO_VERSION = 'MaCo錬成 2026-11-24';
+const MACO_VERSION = 'MaCo錬成 2026-11-24b';
 // ---- 設定の既定値（検知パラメータは既存の328件の波形で検証した値） ----
 const DEFAULTS = {
   thr: 0.08,        // 撃発候補：加速度差分(G/サンプル)のしきい値
@@ -423,7 +423,8 @@ const DEFAULTS = {
   audioDelayMs: 0,  // 音の出力遅れ（ms）。Bluetoothイヤホンの遅れ（約100〜300ms）を反応時間から差し引く
   scenSlideS: 1.5,  // ドライの連続射撃：1発あたりのスライド操作の時間（MaLIの目標の射撃間隔・合計時間に加算）
   gbbRest1: 5,      // ガスブローバック時の1コ的の休止（秒）。実射の要領（射撃3秒→5秒の休止）に合わせ5秒（2026-11-24。以前は2秒）
-  gbbRest3: 2,      // ガスブローバック時の3コ的の休止（秒）
+  gbbRest3: 2,      // （未使用。2026-11-24 以降、GBBの3コ的は休止なしの連続形式）
+  gbbT3S: 6,        // ガスブローバック時の3コ的：開始ブザー1回の後、この秒数で的1→的2→的3へ1発ずつ（休止なし。実射の要領。2026-11-24）
   cantZeroSrc: '',  // 傾きの0点の記録元：calib＝静止バイアスと同時（装着前・仮）、aim＝装着後に構えて記録（正式）
   scenLateMs: 1000, // 終了ブザー後、この時間内の撃発は「時間外」として記録（以降はスライド操作の時間とみなし記録しない）
   cantZero: 0,      // 傾き（カント）の0点（deg）。M5の取り付けの傾きを差し引く
@@ -1884,6 +1885,11 @@ function scenarioOf(key, gun) {
 }
 function scenarioForGun(sc, gun, key) {
   const gbb = gunProfile(gun).mode === 'gbb'; sc.mode = gbb ? 'gbb' : 'dry';
+  // 3コ的・GBB（2026-11-24）：実射の要領に合わせ、開始ブザー1回 → 制限時間（既定6秒）内に的1→的2→的3へ1発ずつ → 終了ブザー。休止なし（連続形式で扱う）
+  if (gbb && key === 't3') {
+    const lim = settings.gbbT3S;
+    return { type: 'string', label: `3コ的（${+lim.toFixed(1)}秒・3発）・GBB`, short: '3コ的', shots: 3, tmap: [1, 2, 3], reloadAt: 0, limitMs: Math.round(lim * 1000), goals: {}, targets: 3, leadS: sc.leadS, mode: 'gbb' };
+  }
   if (sc.type === 'string') {
     if (!gbb && sc.goals) {
       const sl = settings.scenSlideS, nSplit = Math.max(0, sc.shots - 1 - (sc.reloadAt ? 1 : 0));
@@ -1905,7 +1911,7 @@ function scenCfg(sc) { return (sc && (sc.cfg || SCENARIOS[sc.key])) || null; }
 function renderScenSelect() {
   const sel = $('scenSel'); if (!sel) return;
   if (settings.scen !== 'free' && !scenarioOf(settings.scen)) { settings.scen = 'free'; saveSettings(); }
-  sel.innerHTML = `<option value="free">1 自由練成</option><option value="t1">2 1コ的 3秒×4</option><option value="t3">3 3コ的 2秒×3</option>` +
+  sel.innerHTML = `<option value="free">1 自由練成</option><option value="t1">2 1コ的 3秒×4</option><option value="t3">3 3コ的 ${gunProfile(settings.gun).mode === 'gbb' ? +settings.gbbT3S.toFixed(1) + '秒・3発' : '2秒×3'}</option>` +
     `<option value="m_posture">4 至近射撃（姿勢変換）</option><option value="m_day">5 制圧致命射撃（昼間）</option><option value="m_night">6 制圧致命射撃（夜間）</option>` +
     customScens.map((c, i) => `<option value="${escHtml(c.id)}">${i + 7} ${escHtml(c.name)} ${c.type === 'string' ? c.shots + '発連続' : +c.parS.toFixed(1) + '秒×' + c.reps + ((c.perRep || 1) > 1 ? '回・各' + c.perRep + '発' : '')}</option>`).join('');
   sel.value = settings.scen;
@@ -2112,7 +2118,7 @@ function showStringResult(r, list) {
   $('resCause').textContent = `${r.sc.short} 終了：${list.length}/${r.sc.shots}発`;
   $('resTip').innerHTML = stringLine(m, r.sc);
   $('resMeta').textContent = list.slice().sort((a, b2) => a.sc.rep - b2.sc.rep).map(s => `${s.sc.rep}${r.sc.targets > 1 ? '(的' + s.sc.target + ')' : ''}: ${(s.sc.react / 1000).toFixed(2)}秒` +
-    (s.sc.split != null ? ` +${(s.sc.split / 1000).toFixed(2)}` : '') + ` ${Math.round(s.predicted)}点${s.sc.rapid ? '(参考)' : ''}${s.sc.late ? ' 時間外' : ''}${s.quality === 'suspect' ? ' 要確認' : ''}`).join('\n');
+    (s.sc.split != null ? ` +${(s.sc.split / 1000).toFixed(2)}` : '') + (aimOf(s) ? `(停止→${(aimOf(s).aim / 1000).toFixed(2)})` : '') + ` ${Math.round(s.predicted)}点${s.sc.rapid ? '(参考)' : ''}${s.sc.late ? ' 時間外' : ''}${s.quality === 'suspect' ? ' 要確認' : ''}`).join('\n');
 }
 // 練成1回分の集計。点数の平均は時間内かつ要確認でない発、反応時間は時間内の発
 // 1回に複数発（perRep>1）：規定の発数＝回数×発数。反応は各回の1発目、最終弾は規定の発数をすべて時間内に撃った回の最後の発のブザーからの時間、
@@ -2445,7 +2451,7 @@ function renderScenSummary(live, runs) {
       const m = stringMetrics(ss, sc, meta && meta.actions), ok = ss.filter(s => !s.sc.late && !s.sc.rapid && s.quality !== 'suspect' && s.predicted != null);
       return `<div class="scen-run"><div class="h">${new Date(id).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}　${escHtml(sc.label)}${meta && meta.aborted ? '（中止）' : ''}</div>
         <div class="s">${ss.length}/${sc.shots}発${ok.length ? ` ／ 平均 ${Math.round(mean(ok.map(s => s.predicted)))}点` : ''} ／ ${stringLine(m, sc)}</div>
-        <table>${ss.slice().sort((a, b) => a.sc.rep - b.sc.rep).map(s => `<tr><td>${s.sc.rep}${sc.targets > 1 ? '・的' + s.sc.target : ''}</td><td>${(s.sc.react / 1000).toFixed(2)}秒</td><td>${s.sc.split != null ? '+' + (s.sc.split / 1000).toFixed(2) : ''}</td>` +
+        <table>${ss.slice().sort((a, b) => a.sc.rep - b.sc.rep).map(s => `<tr><td>${s.sc.rep}${sc.targets > 1 ? '・的' + s.sc.target : ''}</td><td>${(s.sc.react / 1000).toFixed(2)}秒</td><td>${s.sc.split != null ? '+' + (s.sc.split / 1000).toFixed(2) : ''}${aimOf(s) ? ` <small>停止→${(aimOf(s).aim / 1000).toFixed(2)}</small>` : ''}</td>` +
           `<td><span class="chip b-${s.band}">${Math.round(s.predicted)}</span></td><td>${cantText(s.cant).replace('傾き ', '')}</td><td>${s.sc.late ? '<span class="tag-late">時間外</span>' : ''}${s.sc.rapid ? '<span class="tag-sus">連射</span>' : ''}${s.quality === 'suspect' ? '<span class="tag-sus">要確認</span>' : ''}</td></tr>`).join('')}</table></div>`;
     }
     const reps = meta ? meta.reps : sc.reps, per = sc.perRep || 1, st = scenStats(ss, reps, per);
@@ -2528,9 +2534,9 @@ async function renderScenAnalysis(sessions) {
       `<div class="ana-h">合計時間（秒）の推移</div>` + miniLine(runs.map(r => r.m ? r.m.total : null), 0, g.total ? g.total * 1.5 : null, 'aT2', g.total ? [g.total] : []) +
       `<div class="ana-h">平均射撃間隔（秒）の推移</div>` + miniLine(runs.map(r => r.m ? r.m.split : null), 0, g.split ? g.split * 1.5 : null, 'aT3', g.split ? [g.split] : []) +
       `<div class="ana-cap" id="anaCap">${runs.length ? capOf(runs[runs.length - 1]) + '（最新）' : ''}</div>`;
-    const rowS = (label, ss) => { const sp = ss.filter(s => s.sc.split != null && !(cfg.reloadAt && s.sc.rep === cfg.reloadAt + 1)), okk = ss.filter(sc);
+    const rowS = (label, ss) => { const sp = ss.filter(s => s.sc.split != null && !(cfg.reloadAt && s.sc.rep === cfg.reloadAt + 1)), okk = ss.filter(s => sc(s) && !s.sc.late);
       return `<tr><td>${label}</td><td>${ss.length}</td><td>${sp.length ? (mean(sp.map(s => s.sc.split)) / 1000).toFixed(2) : '--'}</td>${aimCols(ss.filter(s => !(cfg.reloadAt && s.sc.rep === cfg.reloadAt + 1)))}<td>${okk.length ? Math.round(mean(okk.map(s => s.predicted))) : '--'}</td></tr>`; };
-    const headS = '<tr><th></th><th>発数</th><th>間隔(秒)</th><th>戻り(秒)</th><th>停止→撃発(秒)</th><th>平均点</th></tr>';
+    const headS = '<tr><th></th><th>発数</th><th>間隔(秒)</th><th>移動・戻り(秒)</th><th>停止→撃発(秒)</th><th>平均点</th></tr>';
     const reps = [...new Set(ds.map(s => s.sc.rep))].sort((a, b) => a - b);
     html += `<div class="ana-h">何発目ごと（${cfg.reloadAt ? cfg.reloadAt + 1 + '発目の間隔は弾倉交換を含むため除外' : '1発目は間隔なし'}）</div><table class="ana">${headS}${reps.map(r => rowS(`${r}発目`, ds.filter(s => s.sc.rep === r))).join('')}</table>`;
     if (cfg.targets > 1) { const ts = [...new Set(ds.map(s => s.sc.target))].sort((a, b) => a - b);
@@ -2538,7 +2544,7 @@ async function renderScenAnalysis(sessions) {
     { const pg = phaseGroups(ds, cfg.shots, true, cfg); html += `<div class="ana-h">前半・後半${cfg.targets > 1 ? '・的の移動' : ''}</div><table class="ana">${headS}${pg.map(([l, ss]) => rowS(l, ss)).join('')}</table><p class="hint" style="margin:2px 0 0">${pg.note}</p>`; }
     const pts = ds.filter(s => sc(s) && s.sc.split != null && !(cfg.reloadAt && s.sc.rep === cfg.reloadAt + 1)).map(s => Object.assign({}, s, { sc: Object.assign({}, s.sc, { react: s.sc.split }) }));
     html += `<div class="ana-h">射撃間隔と点数（●時間内 ○時間外）</div>` + scatterRS(pts, g.split || null) + `<div class="ana-cap" id="anaCap2"></div>` + rsSummary(pts.filter(s => !s.sc.late)).replace(/反応/g, '間隔');
-    html += '<p class="hint">点数は時間内かつ「要確認」でない発で、前の発から0.5秒未満、または0.5〜1秒で撃発前400msに前の発の反動の揺れ（10dps以上）が残る発は連射として除く。目標値の点線はMaLIの評価B基準（ドライはスライド操作の時間を加算）。戻り＝前の発の後、銃口の動き（20dps以上。反動を含む）が止まるまで、停止→撃発＝止まってから撃発まで（1発目はブザーから）。</p>';
+    html += '<p class="hint">点数は時間内かつ「要確認」でない発で、前の発から0.5秒未満、または0.5〜1秒で撃発前400msに前の発の反動の揺れ（10dps以上）が残る発は連射として除く。目標値の点線はMaLIの評価B基準（ドライはスライド操作の時間を加算）。移動・戻り＝1発目はブザーから、2発目以降は前の発から、銃口の動き（20dps以上。反動・的の移動を含む）が止まるまで。停止→撃発＝止まってから撃発まで。平均点は時間外の発を除く。</p>';
     el.innerHTML = html; bindAna();
     el.querySelectorAll('[data-ri]').forEach(c => c.onclick = () => { $('anaCap').textContent = capOf(runs[+c.dataset.ri]); });
     el.querySelectorAll('[data-si]').forEach(c => c.onclick = () => { const s = pts[+c.dataset.si];
@@ -2871,7 +2877,7 @@ const SET_SPEC = {
     ['scenLeadS', '開始までの秒数', '練成の開始ボタンから第1ブザーまで', 1, 30, 1],
     ['scenSlideS', 'ドライのスライド操作時間（秒/発）', 'MaLIの要領をドライで行うとき、射撃間隔・合計時間の目標に加算する', 0, 5, 0.1],
     ['gbbRest1', 'ガスブローバック時の休止：1コ的（秒）', '実射の要領に合わせ5秒（ドライも5秒）。終了ブザーから次の開始ブザーまで', 0, 10, 0.5],
-    ['gbbRest3', 'ガスブローバック時の休止：3コ的（秒）', '（ドライは3秒）', 0, 10, 0.5],
+    ['gbbT3S', 'ガスブローバック時の3コ的：制限時間（秒）', '開始ブザー1回の後、この時間内に的1→的2→的3へ1発ずつ（休止なし）。ドライは2秒×3回・休止3秒', 2, 20, 0.5],
     ['scenLateMs', '時間外として記録する猶予（ms）', '終了ブザー後この時間内の撃発は「時間外」として記録。以降は休止中（スライド操作）とみなし記録しない', 0, 3000, 100],
     ['cantWarn', '傾きの注意（deg）', 'これ以上の傾きに⚠を付ける（暫定値）', 1, 15, 0.5],
   ],
@@ -2902,7 +2908,7 @@ function renderSettings() {
   document.querySelectorAll('[data-k]').forEach(el => el.onchange = () => {
     const k = el.dataset.k; settings[k] = el.type === 'checkbox' ? el.checked : el.tagName === 'SELECT' ? el.value : (isNaN(parseFloat(el.value)) ? DEFAULTS[k] : parseFloat(el.value));
     if (k === 'gun') { if (session) session.gun = settings.gun; if (det) { det.mode = gunProfile(settings.gun).mode || 'dry'; det.rifle = !!gunProfile(settings.gun).rifle; } renderGun(); renderScenSelect(); }
-    saveSettings(); if (det) det.p = settings;
+    saveSettings(); if (det) det.p = settings; if (k === 'gbbT3S') renderScenSelect();
     if (k === 'beep' && settings.beep) { try { if (!audioCtx && window.AudioContext) audioCtx = new AudioContext(); if (audioCtx) audioCtx.resume(); } catch (e) {} beep('中'); }
     if (k === 'rawRecord' && !settings.rawRecord) flushRaw();
     if (k === 'liveTraj' && !settings.liveTraj && det.state === 'ARMED') $('trajSvg').innerHTML = '';
