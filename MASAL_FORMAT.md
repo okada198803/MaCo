@@ -60,7 +60,7 @@ shots, plannedShots, scoreMean（予測点の平均。時間外・連射・要�
 
 ### MaCo drill（repeat：1コ的・3コ的など）
 
-reps, shots, inTime, scoreMean, reactMeanS, reactMaxS, cantMaxDeg, parS, restS
+reps, shots, inTime, scoreMean, reactMeanS, reactMaxS, cantMaxDeg, parS, restS（2026-11-24 以降 aimMeanS・moveMeanS＝時間内の発の停止→撃発・移動の平均）
 
 ### MaCo free
 
@@ -73,6 +73,7 @@ shots, scored, suspect, scoreMean, scoreSd, bands（high/mid/low）, causeCounts
 | n | ○ | ○ | 何発目（MaCoの自由練成はセッション内の通し番号） |
 | tS | ○ | 練成のみ | 開始ブザーからの秒 |
 | splitS | ○ | 練成のみ | 前の発からの秒 |
+| aimS / moveS | － | ○（moveSは練成のみ） | 停止→撃発の秒（撃発前に銃口の動き20dps以上が止まってから撃発まで）／移動の秒（ブザー、または前の発から止まるまで）。MaCo 2026-11-24 以降 |
 | target / rangeM | ○ | target | 的番号・射距離 |
 | at | － | ○ | 撃発の日時（ISO 8601） |
 | score / band | － | ○ | 予測点（±10点程度の幅で読む）・帯（高/中/低） |
