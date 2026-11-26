@@ -377,7 +377,7 @@
 // =========================================================
 
 // ==CORE_BEGIN==
-const MACO_VERSION = 'MaCo錬成 2026-11-24b';
+const MACO_VERSION = 'MaCo錬成 2026-11-26';
 // ---- 設定の既定値（検知パラメータは既存の328件の波形で検証した値） ----
 const DEFAULTS = {
   thr: 0.08,        // 撃発候補：加速度差分(G/サンプル)のしきい値
@@ -393,7 +393,7 @@ const DEFAULTS = {
   orientMax: 45,    // 銃の向き：重力方向が据銃時の向き（M5のZ軸）から この角度(deg)以上ずれていれば撃発とみなさない（置いた・横倒し等）
   mountFlip: false, // M5の前後逆取り付け：true＝Z軸まわり180°。受信直後に X・Y の加速度と角速度の符号を反転して既存の取り付けに揃える（2026-11-02）
   mountUp: false,   // M5の取り付けの向き：false＝据銃時に az≈-1G（既存の取り付け）、true＝上下逆（az≈+1G）
-  holdRecent: 2.6,
+  holdRecent: 5.0,  // 2026-11-26：2.6→5.0。据銃から2〜3秒以内に撃つ射手（別の人の撃発、直前1秒の中央値2.7〜4.7）が棄却されていた。構え直し・持ち替えは9.6以上
   rifleShockMin: 0.9, // 小銃GBB：撃発とみなす衝撃（加速度差分の最大、G）。実射28発の最小0.95、構え・持ち替え等の衝撃は撃発前の動きで棄却（620秒で誤検知0）
   gbbPeakMin: 0.5,  // GBB：撃発の衝撃（加速度差分の最大、G）がこれ未満ならスライドが十分に動いていない（ガス不足・弾切れ等）とみなし撃発としない  // 照準の保持：3秒の中央値がholdMax以上でも、直前1秒(-1000〜-150ms)の中央値がこの値未満なら棄却せず「要確認」（据銃直後の撃発）
   slideG: 100,      // スライド操作とみなす合成角速度(dps)。撃発後300〜500msの最大は27dps
@@ -1081,7 +1081,9 @@ class ShotDetector {
     const c = this.cand, b = this.buf, p = this.p;
     const maxGm = (a, z) => { let m = 0; const i1 = this.idxFrom(z + 1e-9); for (let i = this.idxFrom(a); i < i1; i++) if (b[i].gm > m) m = b[i].gm; return m; };
     const scen = this.h.inScenario ? this.h.inScenario(c.t0) : false; // 練成の制限時間内（据銃・的の移動の直後）
-    const preMax = maxGm(c.t0 + (scen ? SCEN_PRE_FROM_MS : -1000), c.t0 - 150), postMax = maxGm(c.t0 + 100, c.t0 + CONFIRM_MS);
+    // 練成の制限時間内は撃発後の確認を +100〜+200ms に短縮（2026-11-26）：3コ的では撃発の0.2〜0.3秒後に次の的へ動き出し、+500msまでの確認で初弾が棄却されていた。
+    // 採点（〜+100ms）・方向判定（〜+200ms）はこの範囲より後の動きを使わない。スライド操作の衝撃は+200ms以内に60dps以上となり引き続き棄却される
+    const preMax = maxGm(c.t0 + (scen ? SCEN_PRE_FROM_MS : -1000), c.t0 - 150), postMax = maxGm(c.t0 + 100, c.t0 + (scen ? SCEN_POST_TO_MS : CONFIRM_MS));
     const info = Object.assign({}, c, { preMax, postMax });
     if ((preMax >= p.rejectPre && !scen) || postMax >= p.rejectPost) {
       info.reason = preMax >= p.rejectPre ? '撃発の前に大きな動きがある（持ち替え・スライド操作等）' : '撃発の後に大きな動きがある（スライド操作等）';
@@ -1179,6 +1181,7 @@ function stringMetrics(list, cfg, actions) {
 // 練成中の撃発前の静止確認：ブザー後すぐの据銃・的の移動で撃発前1秒の動きが大きくなるため、
 // 制限時間内（終了後の猶予を含む）の撃発は -500〜-150ms で確認し、超えても棄却せず「要確認」とする（暫定。練成データで要検証）
 const SCEN_PRE_FROM_MS = -500;
+const SCEN_POST_TO_MS = 200;
 // 1回目の開始ブザーを0とした各回の開始・終了時刻（ms）
 function scenarioTimeline(sc, leadMs) {
   if (sc.type === 'string') return [{ rep: 1, target: 1, start: leadMs, end: sc.limitMs ? leadMs + sc.limitMs : Infinity }];
@@ -1417,6 +1420,8 @@ function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* 保存
 try { const s = JSON.parse(lsGet('maco_train_settings') || '{}'); Object.keys(DEFAULTS).forEach(k => { if (k in s && typeof s[k] === typeof DEFAULTS[k]) settings[k] = s[k]; }); } catch (e) {}
 // 1コ的のGBBの休止：旧既定値（2秒）のままなら5秒に移行する（2026-11-24、1回のみ）
 if (lsGet('maco_mig_rest1') !== '1') { if (settings.gbbRest1 === 2) settings.gbbRest1 = 5; lsSet('maco_mig_rest1', '1'); try { localStorage.setItem('maco_train_settings', JSON.stringify(settings)); } catch (e) {} }
+// 要確認の条件（holdRecent）：旧既定値（2.6）のままなら5.0に移行する（2026-11-26、1回のみ）
+if (lsGet('maco_mig_hold5') !== '1') { if (settings.holdRecent === 2.6) settings.holdRecent = 5.0; lsSet('maco_mig_hold5', '1'); try { localStorage.setItem('maco_train_settings', JSON.stringify(settings)); } catch (e) {} }
 function saveSettings() { lsSet('maco_train_settings', JSON.stringify(settings)); }
 let savedBias = null;
 try { savedBias = JSON.parse(lsGet('maco_train_bias') || 'null'); } catch (e) {}
